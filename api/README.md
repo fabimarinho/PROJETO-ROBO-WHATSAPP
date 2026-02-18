@@ -7,6 +7,12 @@
 - RBAC por tenant com roles: `owner`, `admin`, `operator`, `viewer`
 - Persistência real em PostgreSQL para domínios principais
 
+## Endurecimentos recentes
+- Sem fallback inseguro de `JWT_SECRET`
+- Bootstrap admin só quando `BOOTSTRAP_ADMIN_ENABLED=true`
+- Webhook rejeita assinatura inválida (401)
+- Reconciliação de webhook com contagem idempotente para billing
+
 ## Observabilidade básica
 - `GET /v1/health`: status + check de banco
 - `GET /v1/metrics`: formato Prometheus

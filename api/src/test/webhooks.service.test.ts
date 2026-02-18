@@ -6,11 +6,14 @@ import { WebhooksService } from '../modules/webhooks/webhooks.service';
 class FakeDb {
   public calls: Array<{ text: string; values: unknown[] }> = [];
 
-  async query(text: string, values: unknown[] = []): Promise<{ rowCount: number; rows: Array<{ status: string }> }> {
+  async query(
+    text: string,
+    values: unknown[] = []
+  ): Promise<{ rowCount: number; rows: Array<{ previous_status: string }> }> {
     this.calls.push({ text, values });
 
-    if (text.includes('select status from updated')) {
-      return { rowCount: 1, rows: [{ status: 'delivered' }] };
+    if (text.includes('select previous_status from updated')) {
+      return { rowCount: 1, rows: [{ previous_status: 'sent' }] };
     }
 
     return { rowCount: 1, rows: [] };
@@ -29,7 +32,7 @@ describe('WebhooksService', () => {
     assert.equal(valid, true);
   });
 
-  it('reconciles statuses and writes billing counters', async () => {
+  it('reconciles statuses and writes billing counters idempotently', async () => {
     const db = new FakeDb();
     const service = new WebhooksService(db as never);
 

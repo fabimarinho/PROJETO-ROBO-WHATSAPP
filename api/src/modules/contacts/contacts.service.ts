@@ -65,10 +65,18 @@ export class ContactsService {
     let imported = 0;
     let invalid = 0;
 
-    for (const line of lines) {
+    for (const [index, line] of lines.entries()) {
+      const values = this.parseCsvLine(line);
+
+      // Skip optional header line.
+      if (index === 0 && values[0]?.toLowerCase().includes('phone')) {
+        continue;
+      }
+
       total += 1;
-      const [phoneRaw, waIdRaw, consentRaw] = line.split(',').map((value) => value?.trim());
-      const phone = this.normalizePhone(phoneRaw);
+      const phone = this.normalizePhone(values[0]);
+      const waIdRaw = values[1];
+      const consentRaw = values[2];
 
       if (!phone) {
         invalid += 1;
@@ -109,5 +117,38 @@ export class ContactsService {
     }
 
     return cleaned.startsWith('+') ? cleaned : `+${cleaned}`;
+  }
+
+  private parseCsvLine(line: string): string[] {
+    const values: string[] = [];
+    let current = '';
+    let inQuotes = false;
+
+    for (let i = 0; i < line.length; i += 1) {
+      const char = line[i];
+
+      if (char === '"') {
+        const next = line[i + 1];
+        if (inQuotes && next === '"') {
+          current += '"';
+          i += 1;
+          continue;
+        }
+
+        inQuotes = !inQuotes;
+        continue;
+      }
+
+      if (char === ',' && !inQuotes) {
+        values.push(current.trim());
+        current = '';
+        continue;
+      }
+
+      current += char;
+    }
+
+    values.push(current.trim());
+    return values;
   }
 }

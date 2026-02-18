@@ -2,6 +2,8 @@
 import { resolve } from 'node:path';
 import { Pool } from 'pg';
 
+const MIGRATION_LOCK_KEY = 823451;
+
 async function main(): Promise<void> {
   const mode = process.argv.includes('--status') ? 'status' : 'apply';
   const migrationsDir = resolve(process.cwd(), '..', 'sql', 'migrations');
@@ -41,29 +43,37 @@ async function main(): Promise<void> {
     return;
   }
 
-  for (const file of files) {
-    if (applied.has(file)) {
-      continue;
-    }
+  const lockClient = await pool.connect();
 
-    const sql = readFileSync(resolve(migrationsDir, file), 'utf8');
-    const client = await pool.connect();
+  try {
+    await lockClient.query('select pg_advisory_lock($1)', [MIGRATION_LOCK_KEY]);
 
-    try {
-      await client.query('begin');
-      await client.query(sql);
-      await client.query('insert into schema_migrations (version) values ($1)', [file]);
-      await client.query('commit');
-      console.log(`APPLIED ${file}`);
-    } catch (error) {
-      await client.query('rollback');
-      throw error;
-    } finally {
-      client.release();
+    for (const file of files) {
+      if (applied.has(file)) {
+        continue;
+      }
+
+      const sql = readFileSync(resolve(migrationsDir, file), 'utf8');
+      const client = await pool.connect();
+
+      try {
+        await client.query('begin');
+        await client.query(sql);
+        await client.query('insert into schema_migrations (version) values ($1)', [file]);
+        await client.query('commit');
+        console.log(`APPLIED ${file}`);
+      } catch (error) {
+        await client.query('rollback');
+        throw error;
+      } finally {
+        client.release();
+      }
     }
+  } finally {
+    await lockClient.query('select pg_advisory_unlock($1)', [MIGRATION_LOCK_KEY]);
+    lockClient.release();
+    await pool.end();
   }
-
-  await pool.end();
 }
 
 void main();

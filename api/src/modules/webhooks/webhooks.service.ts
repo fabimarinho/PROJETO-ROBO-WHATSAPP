@@ -4,6 +4,10 @@ import { PostgresService } from '../../shared/database/postgres.service';
 
 type MetaStatus = 'sent' | 'delivered' | 'read' | 'failed';
 
+type ReconcileRow = {
+  previous_status: string;
+};
+
 @Injectable()
 export class WebhooksService {
   constructor(private readonly db: PostgresService) {}
@@ -41,16 +45,24 @@ export class WebhooksService {
       const mappedStatus = this.mapMetaStatus(status.status);
       const errorCode = status.errorCode ?? null;
 
-      const res = await this.db.query<{ status: string }>(
-        `with updated as (
-           update campaign_messages
-           set status = $1,
-               error_code = $2
+      const res = await this.db.query<ReconcileRow>(
+        `with target as (
+           select id, status as previous_status
+           from campaign_messages
            where tenant_id = $3
              and meta_message_id = $4
-           returning status
+           for update
+         ),
+         updated as (
+           update campaign_messages cm
+           set status = $1,
+               error_code = $2
+           from target t
+           where cm.id = t.id
+             and cm.status is distinct from $1
+           returning t.previous_status
          )
-         select status from updated`,
+         select previous_status from updated`,
         [mappedStatus, errorCode, tenantId, status.messageId]
       );
 
@@ -58,18 +70,37 @@ export class WebhooksService {
       updated += count;
 
       if (count > 0) {
-        await this.incrementUsageCounters(tenantId, mappedStatus, count);
+        await this.incrementUsageCounters(tenantId, res.rows.map((row) => row.previous_status), mappedStatus);
       }
     }
 
     return updated;
   }
 
-  private async incrementUsageCounters(tenantId: string, status: string, qty: number): Promise<void> {
-    const sent = status === 'sent' ? qty : 0;
-    const delivered = status === 'delivered' ? qty : 0;
-    const failed = status.startsWith('failed') ? qty : 0;
-    const billable = status === 'delivered' ? qty : 0;
+  private async incrementUsageCounters(
+    tenantId: string,
+    previousStatuses: string[],
+    newStatus: string
+  ): Promise<void> {
+    let sent = 0;
+    let delivered = 0;
+    let failed = 0;
+    let billable = 0;
+
+    for (const previous of previousStatuses) {
+      if (newStatus === 'sent' && previous !== 'sent') {
+        sent += 1;
+      }
+
+      if (newStatus === 'delivered' && previous !== 'delivered') {
+        delivered += 1;
+        billable += 1;
+      }
+
+      if (newStatus.startsWith('failed') && !previous.startsWith('failed')) {
+        failed += 1;
+      }
+    }
 
     if (sent === 0 && delivered === 0 && failed === 0 && billable === 0) {
       return;

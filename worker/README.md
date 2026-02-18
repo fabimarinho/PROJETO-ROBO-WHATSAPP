@@ -9,10 +9,10 @@ Worker com pipeline completo:
 
 ## Filas
 - `campaign.launch`
-- `campaign.launch.retry`
+- `campaign.launch.retry` (delay queue com dead-letter para `campaign.launch`)
 - `campaign.launch.dlq`
 - `message.send`
-- `message.send.retry`
+- `message.send.retry` (delay queue com dead-letter para `message.send`)
 - `message.send.dlq`
 
 ## Variáveis
@@ -26,5 +26,6 @@ Worker com pipeline completo:
 - `META_GRAPH_VERSION`
 - `META_PHONE_NUMBER_ID`
 - `META_ACCESS_TOKEN`
+- `ALLOW_MOCK_WHATSAPP_SEND`
 
-Sem credenciais da Meta, o worker opera em modo mock (gera `meta_message_id` local).
+Sem credenciais da Meta, o worker só entra em mock quando `ALLOW_MOCK_WHATSAPP_SEND=true` e fora de produção.

@@ -44,9 +44,13 @@ export class WebhooksController {
   ): Promise<{ received: boolean; signatureOk: boolean; reconciled: number }> {
     const rawBody = req.rawBody ?? Buffer.from(JSON.stringify(body));
     const signatureOk = await this.webhooksService.verifySignature(rawBody, signature);
+    if (!signatureOk) {
+      throw new UnauthorizedException('Invalid webhook signature');
+    }
+
     await this.webhooksService.storeEvent(tenantId, body, signatureOk);
 
-    const reconciled = signatureOk ? await this.webhooksService.reconcileMessageStatuses(tenantId, body) : 0;
+    const reconciled = await this.webhooksService.reconcileMessageStatuses(tenantId, body);
     return { received: true, signatureOk, reconciled };
   }
 }

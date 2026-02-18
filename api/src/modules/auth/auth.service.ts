@@ -1,4 +1,4 @@
-﻿import { Injectable, UnauthorizedException } from '@nestjs/common';
+﻿import { Injectable, InternalServerErrorException, UnauthorizedException } from '@nestjs/common';
 import { compare, hash } from 'bcryptjs';
 import { randomUUID } from 'node:crypto';
 import { sign } from 'jsonwebtoken';
@@ -42,13 +42,18 @@ export class AuthService {
 
     const memberships = await this.getMemberships(user.id);
 
+    const jwtSecret = process.env.JWT_SECRET;
+    if (!jwtSecret) {
+      throw new InternalServerErrorException('JWT secret is not configured');
+    }
+
     const token = sign(
       {
         sub: user.id,
         email: user.email,
         memberships
       },
-      process.env.JWT_SECRET ?? 'dev-secret',
+      jwtSecret,
       { expiresIn: '8h' }
     );
 
@@ -111,8 +116,18 @@ export class AuthService {
       return;
     }
 
-    const email = process.env.BOOTSTRAP_ADMIN_EMAIL ?? 'admin@demo.com';
-    const password = process.env.BOOTSTRAP_ADMIN_PASSWORD ?? 'admin123';
+    const bootstrapEnabled = process.env.BOOTSTRAP_ADMIN_ENABLED === 'true';
+    if (!bootstrapEnabled) {
+      this.bootstrapReady = true;
+      return;
+    }
+
+    const email = process.env.BOOTSTRAP_ADMIN_EMAIL;
+    const password = process.env.BOOTSTRAP_ADMIN_PASSWORD;
+
+    if (!email || !password) {
+      throw new InternalServerErrorException('Bootstrap admin is enabled but credentials are missing');
+    }
 
     const existsRes = await this.db.query<{ id: string }>('select id from users where email = $1 limit 1', [email]);
 

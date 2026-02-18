@@ -1,4 +1,10 @@
-﻿import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from '@nestjs/common';
+﻿import {
+  CanActivate,
+  ExecutionContext,
+  Injectable,
+  InternalServerErrorException,
+  UnauthorizedException
+} from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { verify } from 'jsonwebtoken';
 import { AuthUser } from '../auth/auth.types';
@@ -32,10 +38,15 @@ export class JwtAuthGuard implements CanActivate {
       throw new UnauthorizedException('Missing bearer token');
     }
 
+    const jwtSecret = process.env.JWT_SECRET;
+    if (!jwtSecret) {
+      throw new InternalServerErrorException('JWT secret is not configured');
+    }
+
     const token = authHeader.slice('Bearer '.length);
 
     try {
-      const payload = verify(token, process.env.JWT_SECRET ?? 'dev-secret') as { sub: string };
+      const payload = verify(token, jwtSecret) as { sub: string };
       request.user = await this.authService.getUserOrThrow(payload.sub);
       return true;
     } catch {

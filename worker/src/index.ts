@@ -1,4 +1,4 @@
-﻿import { Channel, ChannelModel, ConsumeMessage, connect } from 'amqplib';
+﻿import { Channel, ChannelModel, ConsumeMessage, Options, connect } from 'amqplib';
 import { randomUUID } from 'node:crypto';
 import { DbClient } from './infra/db-client';
 import { PlanRateLimiter, RateLimitError } from './infra/plan-rate-limiter';
@@ -37,12 +37,22 @@ const MESSAGE_DLQ = `${MESSAGE_QUEUE}.dlq`;
 const MAX_ATTEMPTS = Number(process.env.WORKER_MAX_ATTEMPTS ?? 3);
 
 async function setupChannel(channel: Channel): Promise<void> {
+  const campaignRetryArgs: Options.AssertQueue['arguments'] = {
+    'x-dead-letter-exchange': '',
+    'x-dead-letter-routing-key': CAMPAIGN_QUEUE
+  };
+
+  const messageRetryArgs: Options.AssertQueue['arguments'] = {
+    'x-dead-letter-exchange': '',
+    'x-dead-letter-routing-key': MESSAGE_QUEUE
+  };
+
   await channel.assertQueue(CAMPAIGN_QUEUE, { durable: true });
-  await channel.assertQueue(CAMPAIGN_RETRY_QUEUE, { durable: true });
+  await channel.assertQueue(CAMPAIGN_RETRY_QUEUE, { durable: true, arguments: campaignRetryArgs });
   await channel.assertQueue(CAMPAIGN_DLQ, { durable: true });
 
   await channel.assertQueue(MESSAGE_QUEUE, { durable: true });
-  await channel.assertQueue(MESSAGE_RETRY_QUEUE, { durable: true });
+  await channel.assertQueue(MESSAGE_RETRY_QUEUE, { durable: true, arguments: messageRetryArgs });
   await channel.assertQueue(MESSAGE_DLQ, { durable: true });
 
   await channel.prefetch(20);
@@ -160,8 +170,14 @@ async function sendWhatsappTemplateMessage(
   const token = process.env.META_ACCESS_TOKEN;
   const phoneNumberId = process.env.META_PHONE_NUMBER_ID;
   const apiVersion = process.env.META_GRAPH_VERSION ?? 'v20.0';
+  const allowMock = process.env.ALLOW_MOCK_WHATSAPP_SEND === 'true';
+  const isProd = process.env.NODE_ENV === 'production';
 
   if (!token || !phoneNumberId) {
+    if (isProd || !allowMock) {
+      return { ok: false, errorCode: 'meta_credentials_missing' };
+    }
+
     return {
       ok: true,
       messageId: `mock-${randomUUID()}`
@@ -334,9 +350,7 @@ async function start(): Promise<void> {
 
   await setupChannel(channel);
   await consumeCampaignQueue(channel, db, CAMPAIGN_QUEUE);
-  await consumeCampaignQueue(channel, db, CAMPAIGN_RETRY_QUEUE);
   await consumeMessageQueue(channel, db, limiter, MESSAGE_QUEUE);
-  await consumeMessageQueue(channel, db, limiter, MESSAGE_RETRY_QUEUE);
 
   console.log(
     `[worker] ready campaignQueue=${CAMPAIGN_QUEUE} messageQueue=${MESSAGE_QUEUE} maxAttempts=${MAX_ATTEMPTS}`
