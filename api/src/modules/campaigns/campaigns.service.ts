@@ -1,7 +1,7 @@
 ﻿import { Injectable, NotFoundException } from '@nestjs/common';
 import { PostgresService } from '../../shared/database/postgres.service';
 import { RabbitPublisherService } from '../../shared/messaging/rabbit-publisher.service';
-import { Campaign, CampaignMetrics } from './campaign.model';
+import { Campaign, CampaignLog, CampaignMetrics } from './campaign.model';
 
 type DbCampaign = {
   id: string;
@@ -17,6 +17,14 @@ type DbMetrics = {
   sent: string;
   delivered: string;
   failed: string;
+};
+
+type DbCampaignLog = {
+  message_id: string | null;
+  event_type: string;
+  event_source: string;
+  event_at: string;
+  payload_jsonb: unknown;
 };
 
 @Injectable()
@@ -80,7 +88,39 @@ export class CampaignsService {
   async getMetrics(tenantId: string, campaignId: string): Promise<CampaignMetrics> {
     await this.getOrThrow(tenantId, campaignId);
 
-    const metricsRes = await this.db.query<DbMetrics>(
+    const metricsFromMessages = await this.db.query<DbMetrics>(
+      `select
+        count(*) filter (where status = 'queued')::text as queued,
+        count(*) filter (where status in ('sent','accepted_meta'))::text as sent,
+        count(*) filter (where status = 'delivered')::text as delivered,
+        count(*) filter (where status like 'failed%')::text as failed
+      from messages
+      where tenant_id = $1 and campaign_id = $2 and deleted_at is null`,
+      [tenantId, campaignId]
+    );
+
+    const rowFromMessages = metricsFromMessages.rows[0] ?? {
+      queued: '0',
+      sent: '0',
+      delivered: '0',
+      failed: '0'
+    };
+    const totalFromMessages =
+      Number(rowFromMessages.queued) +
+      Number(rowFromMessages.sent) +
+      Number(rowFromMessages.delivered) +
+      Number(rowFromMessages.failed);
+
+    if (totalFromMessages > 0) {
+      return {
+        queued: Number(rowFromMessages.queued),
+        sent: Number(rowFromMessages.sent),
+        delivered: Number(rowFromMessages.delivered),
+        failed: Number(rowFromMessages.failed)
+      };
+    }
+
+    const metricsFromLegacy = await this.db.query<DbMetrics>(
       `select
         count(*) filter (where status = 'queued')::text as queued,
         count(*) filter (where status in ('sent','accepted_meta'))::text as sent,
@@ -91,7 +131,7 @@ export class CampaignsService {
       [tenantId, campaignId]
     );
 
-    const row = metricsRes.rows[0] ?? { queued: '0', sent: '0', delivered: '0', failed: '0' };
+    const row = metricsFromLegacy.rows[0] ?? { queued: '0', sent: '0', delivered: '0', failed: '0' };
 
     return {
       queued: Number(row.queued),
@@ -107,6 +147,7 @@ export class CampaignsService {
        from campaigns c
        inner join templates t on t.id = c.template_id
        where c.tenant_id = $1
+         and c.deleted_at is null
        order by c.created_at desc`,
       [tenantId]
     );
@@ -114,12 +155,64 @@ export class CampaignsService {
     return res.rows.map((item) => this.toCampaign(item));
   }
 
+  async getLogs(tenantId: string, campaignId: string, limit = 100): Promise<CampaignLog[]> {
+    await this.getOrThrow(tenantId, campaignId);
+
+    const safeLimit = Math.min(Math.max(limit, 1), 500);
+
+    const logsFromMessageModel = await this.db.query<DbCampaignLog>(
+      `select m.id as message_id,
+              ml.event_type,
+              ml.event_source,
+              ml.event_at,
+              ml.payload_jsonb
+       from message_logs ml
+       inner join messages m on m.id = ml.message_id and m.tenant_id = ml.tenant_id
+       where ml.tenant_id = $1
+         and m.campaign_id = $2
+       order by ml.event_at desc
+       limit $3`,
+      [tenantId, campaignId, safeLimit]
+    );
+
+    if ((logsFromMessageModel.rowCount ?? 0) > 0) {
+      return logsFromMessageModel.rows.map((row) => ({
+        messageId: row.message_id,
+        eventType: row.event_type,
+        eventSource: row.event_source,
+        eventAt: row.event_at,
+        payload: row.payload_jsonb
+      }));
+    }
+
+    const logsFromLegacy = await this.db.query<DbCampaignLog>(
+      `select null::uuid as message_id,
+              'legacy_webhook_event'::varchar as event_type,
+              'meta_webhook'::varchar as event_source,
+              we.created_at as event_at,
+              we.payload_jsonb
+       from webhook_events we
+       where we.tenant_id = $1
+       order by we.created_at desc
+       limit $2`,
+      [tenantId, safeLimit]
+    );
+
+    return logsFromLegacy.rows.map((row) => ({
+      messageId: row.message_id,
+      eventType: row.event_type,
+      eventSource: row.event_source,
+      eventAt: row.event_at,
+      payload: row.payload_jsonb
+    }));
+  }
+
   private async getOrThrow(tenantId: string, campaignId: string): Promise<Campaign> {
     const res = await this.db.query<DbCampaign>(
       `select c.id, c.tenant_id, c.name, c.status, c.created_at, t.name as template_name
        from campaigns c
        inner join templates t on t.id = c.template_id
-       where c.id = $1 and c.tenant_id = $2
+       where c.id = $1 and c.tenant_id = $2 and c.deleted_at is null
        limit 1`,
       [campaignId, tenantId]
     );

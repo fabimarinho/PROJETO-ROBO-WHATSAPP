@@ -1,5 +1,5 @@
 ﻿import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
-import { Campaign, CampaignMetrics } from './campaign.model';
+import { Campaign, CampaignLog, CampaignMetrics } from './campaign.model';
 import { CampaignsService } from './campaigns.service';
 import { TenantsService } from '../tenants/tenants.service';
 import { TenantAccessGuard } from '../../shared/guards/tenant-access.guard';
@@ -48,5 +48,14 @@ export class CampaignsController {
   async metrics(@Param('tenantId') tenantId: string, @Param('campaignId') campaignId: string): Promise<CampaignMetrics> {
     await this.tenantsService.getOrThrow(tenantId);
     return this.campaignsService.getMetrics(tenantId, campaignId);
+  }
+
+  @Get(':campaignId/logs')
+  async logs(
+    @Param('tenantId') tenantId: string,
+    @Param('campaignId') campaignId: string
+  ): Promise<CampaignLog[]> {
+    await this.tenantsService.getOrThrow(tenantId);
+    return this.campaignsService.getLogs(tenantId, campaignId);
   }
 }

@@ -15,3 +15,11 @@ export type CampaignMetrics = {
   delivered: number;
   failed: number;
 };
+
+export type CampaignLog = {
+  messageId: string | null;
+  eventType: string;
+  eventSource: string;
+  eventAt: string;
+  payload: unknown;
+};
