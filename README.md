@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 ﻿# SaaS WhatsApp Cloud API
 
 Projeto base para uma plataforma SaaS multi-tenant de disparo automatizado via WhatsApp Business Cloud API.
@@ -27,3 +28,6 @@ Projeto base para uma plataforma SaaS multi-tenant de disparo automatizado via W
 2. Implementar módulo de tenants e RLS no app.
 3. Implementar campanhas, dispatcher e integração com Meta API.
 4. Implementar webhook de status e métricas.
+=======
+# PROJETO-ROBO-WHATSAPP
+>>>>>>> 4fbfd012874bca300856ca0a38f57c4b5d7181f4
