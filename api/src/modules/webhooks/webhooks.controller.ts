@@ -41,11 +41,12 @@ export class WebhooksController {
     @Req() req: { rawBody?: Buffer },
     @Body() body: unknown,
     @Headers('x-hub-signature-256') signature?: string
-  ): Promise<{ received: boolean; signatureOk: boolean }> {
+  ): Promise<{ received: boolean; signatureOk: boolean; reconciled: number }> {
     const rawBody = req.rawBody ?? Buffer.from(JSON.stringify(body));
     const signatureOk = await this.webhooksService.verifySignature(rawBody, signature);
     await this.webhooksService.storeEvent(tenantId, body, signatureOk);
 
-    return { received: true, signatureOk };
+    const reconciled = signatureOk ? await this.webhooksService.reconcileMessageStatuses(tenantId, body) : 0;
+    return { received: true, signatureOk, reconciled };
   }
 }

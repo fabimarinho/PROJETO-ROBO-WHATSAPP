@@ -13,10 +13,19 @@ import { PostgresService } from './shared/database/postgres.service';
 import { RabbitPublisherService } from './shared/messaging/rabbit-publisher.service';
 import { WebhooksController } from './modules/webhooks/webhooks.controller';
 import { WebhooksService } from './modules/webhooks/webhooks.service';
+import { ContactsController } from './modules/contacts/contacts.controller';
+import { ContactsService } from './modules/contacts/contacts.service';
 
 @Module({
   imports: [],
-  controllers: [HealthController, AuthController, TenantsController, CampaignsController, WebhooksController],
+  controllers: [
+    HealthController,
+    AuthController,
+    TenantsController,
+    CampaignsController,
+    ContactsController,
+    WebhooksController
+  ],
   providers: [
     PostgresService,
     RabbitPublisherService,
@@ -24,6 +33,7 @@ import { WebhooksService } from './modules/webhooks/webhooks.service';
     CampaignsService,
     AuthService,
     WebhooksService,
+    ContactsService,
     {
       provide: APP_GUARD,
       useClass: JwtAuthGuard

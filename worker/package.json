@@ -1,4 +1,4 @@
-﻿{
+{
   "name": "robo-whatsapp-worker",
   "version": "0.1.0",
   "private": true,
@@ -8,10 +8,12 @@
   },
   "dependencies": {
     "amqplib": "^0.10.5",
+    "ioredis": "^5.4.1",
     "pg": "^8.13.1"
   },
   "devDependencies": {
     "@types/amqplib": "^0.10.7",
+    "@types/ioredis": "^4.28.10",
     "@types/node": "^22.10.2",
     "@types/pg": "^8.11.10",
     "ts-node": "^10.9.2",
