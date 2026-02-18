@@ -1,0 +1,52 @@
+﻿groups:
+  - name: robo_whatsapp_alerts
+    rules:
+      - alert: ApiHigh5xxRate
+        expr: |
+          (
+            increase(app_errors_total[5m]) /
+            clamp_min(increase(app_requests_total[5m]), 1)
+          ) > 0.05
+          and increase(app_requests_total[5m]) > 20
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "API com taxa alta de erro 5xx"
+          description: "Taxa de erro da API > 5% nos últimos 5 minutos."
+
+      - alert: WorkerDlqBacklog
+        expr: worker_queue_depth{queue=~".*\\.dlq"} > 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "DLQ com backlog no worker"
+          description: "Há mensagens acumuladas em fila DLQ por mais de 10 minutos."
+
+      - alert: WorkerPermanentFailuresSpike
+        expr: increase(worker_messages_failed_permanent_total[5m]) > 10
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Pico de falhas permanentes no worker"
+          description: "Mais de 10 mensagens falharam permanentemente em 5 minutos."
+
+      - alert: WorkerRateLimitedSpike
+        expr: increase(worker_messages_rate_limited_total[5m]) > 50
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Pico de rate limit no worker"
+          description: "Rate limit elevado no worker (mais de 50 eventos em 5 minutos)."
+
+      - alert: WorkerNoSuccessfulMessages
+        expr: increase(worker_messages_processed_total[15m]) == 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Worker sem mensagens processadas"
+          description: "Nenhuma mensagem foi processada com sucesso nos últimos 15 minutos."

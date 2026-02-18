@@ -1,6 +1,7 @@
-﻿import { Channel, ChannelModel, ConsumeMessage, Options, connect } from 'amqplib';
+import { Channel, ChannelModel, ConsumeMessage, Options, connect } from 'amqplib';
 import { randomUUID } from 'node:crypto';
 import { DbClient } from './infra/db-client';
+import { WorkerMetrics } from './infra/metrics';
 import { PlanRateLimiter, RateLimitError } from './infra/plan-rate-limiter';
 
 type CampaignLaunchJob = {
@@ -35,6 +36,7 @@ const MESSAGE_RETRY_QUEUE = `${MESSAGE_QUEUE}.retry`;
 const MESSAGE_DLQ = `${MESSAGE_QUEUE}.dlq`;
 
 const MAX_ATTEMPTS = Number(process.env.WORKER_MAX_ATTEMPTS ?? 3);
+const QUEUE_DEPTH_INTERVAL_MS = Number(process.env.WORKER_QUEUE_DEPTH_INTERVAL_MS ?? 15000);
 
 async function setupChannel(channel: Channel): Promise<void> {
   const campaignRetryArgs: Options.AssertQueue['arguments'] = {
@@ -259,7 +261,12 @@ async function enqueueDlq(channel: Channel, queue: string, payload: object, reas
   );
 }
 
-async function consumeCampaignQueue(channel: Channel, db: DbClient, queue: string): Promise<void> {
+async function consumeCampaignQueue(
+  channel: Channel,
+  db: DbClient,
+  metrics: WorkerMetrics,
+  queue: string
+): Promise<void> {
   await channel.consume(queue, async (msg) => {
     if (!msg) {
       return;
@@ -269,6 +276,7 @@ async function consumeCampaignQueue(channel: Channel, db: DbClient, queue: strin
 
     try {
       await processLaunchJob(db, channel, payload);
+      metrics.incLaunchProcessed();
       channel.ack(msg);
     } catch (error) {
       const currentAttempt = payload.attempt ?? 1;
@@ -277,6 +285,7 @@ async function consumeCampaignQueue(channel: Channel, db: DbClient, queue: strin
 
       if (nextAttempt <= MAX_ATTEMPTS) {
         await enqueueRetry(channel, CAMPAIGN_RETRY_QUEUE, payload, nextAttempt);
+        metrics.incMessageRetried('campaign');
       } else {
         await enqueueDlq(channel, CAMPAIGN_DLQ, payload, reason);
       }
@@ -290,6 +299,7 @@ async function consumeMessageQueue(
   channel: Channel,
   db: DbClient,
   limiter: PlanRateLimiter,
+  metrics: WorkerMetrics,
   queue: string
 ): Promise<void> {
   await channel.consume(queue, async (msg) => {
@@ -301,11 +311,13 @@ async function consumeMessageQueue(
 
     try {
       await processMessageJob(db, limiter, payload);
+      metrics.incMessageProcessed();
       channel.ack(msg);
     } catch (error) {
       const currentAttempt = payload.attempt ?? 1;
 
       if (error instanceof RateLimitError) {
+        metrics.incMessageRateLimited();
         await db.query(
           `update campaign_messages
            set status = 'rate_limited'
@@ -314,6 +326,7 @@ async function consumeMessageQueue(
         );
 
         await enqueueRetry(channel, MESSAGE_RETRY_QUEUE, payload, currentAttempt, error.retryAfterMs);
+        metrics.incMessageRetried('message');
         channel.ack(msg);
         return;
       }
@@ -323,6 +336,7 @@ async function consumeMessageQueue(
 
       if (nextAttempt <= MAX_ATTEMPTS) {
         await enqueueRetry(channel, MESSAGE_RETRY_QUEUE, payload, nextAttempt);
+        metrics.incMessageRetried('message');
       } else {
         await db.query(
           `update campaign_messages
@@ -333,6 +347,7 @@ async function consumeMessageQueue(
           [reason, payload.campaignMessageId]
         );
 
+        metrics.incMessageFailedPermanent();
         await enqueueDlq(channel, MESSAGE_DLQ, payload, reason);
       }
 
@@ -341,16 +356,48 @@ async function consumeMessageQueue(
   });
 }
 
+function trackQueueDepth(channel: Channel, metrics: WorkerMetrics): void {
+  const queues = [
+    CAMPAIGN_QUEUE,
+    CAMPAIGN_RETRY_QUEUE,
+    CAMPAIGN_DLQ,
+    MESSAGE_QUEUE,
+    MESSAGE_RETRY_QUEUE,
+    MESSAGE_DLQ
+  ];
+
+  const poll = async (): Promise<void> => {
+    for (const queue of queues) {
+      try {
+        const state = await channel.checkQueue(queue);
+        metrics.setQueueDepth(queue, state.messageCount);
+      } catch {
+        metrics.setQueueDepth(queue, 0);
+      }
+    }
+  };
+
+  const timer = setInterval(() => {
+    void poll();
+  }, QUEUE_DEPTH_INTERVAL_MS);
+
+  timer.unref();
+  void poll();
+}
+
 async function start(): Promise<void> {
   const rabbitUrl = process.env.RABBITMQ_URL ?? 'amqp://localhost:5672';
   const connection: ChannelModel = await connect(rabbitUrl);
   const channel = await connection.createChannel();
   const db = new DbClient();
   const limiter = new PlanRateLimiter();
+  const metrics = new WorkerMetrics();
 
   await setupChannel(channel);
-  await consumeCampaignQueue(channel, db, CAMPAIGN_QUEUE);
-  await consumeMessageQueue(channel, db, limiter, MESSAGE_QUEUE);
+  metrics.startServer();
+  trackQueueDepth(channel, metrics);
+  await consumeCampaignQueue(channel, db, metrics, CAMPAIGN_QUEUE);
+  await consumeMessageQueue(channel, db, limiter, metrics, MESSAGE_QUEUE);
 
   console.log(
     `[worker] ready campaignQueue=${CAMPAIGN_QUEUE} messageQueue=${MESSAGE_QUEUE} maxAttempts=${MAX_ATTEMPTS}`

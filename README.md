@@ -8,6 +8,7 @@ Projeto base para uma plataforma SaaS multi-tenant de disparo automatizado via W
 - Banco: PostgreSQL
 - Cache/Rate limit: Redis
 - Fila: RabbitMQ
+- Observabilidade: Prometheus + Alertmanager + Grafana
 
 ## Estrutura
 - `docs/architecture.md`: arquitetura técnica
@@ -21,3 +22,8 @@ Projeto base para uma plataforma SaaS multi-tenant de disparo automatizado via W
 2. Execute `docker compose up -d`.
 3. Execute migrações: `cd api && npm run migrate`.
 4. Inicie API e worker.
+
+## Observabilidade local
+- Prometheus: `http://localhost:9090`
+- Alertmanager: `http://localhost:9093`
+- Grafana: `http://localhost:3001` (datasource Prometheus provisionado automaticamente)
