@@ -31,3 +31,8 @@ Projeto base para uma plataforma SaaS multi-tenant de disparo automatizado via W
 
 ## SLOs
 - Política inicial de SLO: `docs/slo-policy.md`
+
+## Database Phase 2
+- Modelo e ER textual: `docs/database-phase2-postgresql.md`
+- Migration evolutiva: `sql/migrations/0003_saas_multitenant_phase2.sql`
+- Script completo (bootstrap): `sql/phase2_full_schema.sql`
