@@ -8,6 +8,11 @@ type ReconcileRow = {
   previous_status: string;
 };
 
+type MessageRow = {
+  id: string;
+  previous_status: string;
+};
+
 @Injectable()
 export class WebhooksService {
   constructor(private readonly db: PostgresService) {}
@@ -35,6 +40,12 @@ export class WebhooksService {
        values ($1, 'meta_whatsapp', $2::jsonb, $3, now())`,
       [tenantId, JSON.stringify(payload), signatureOk]
     );
+
+    await this.db.query(
+      `insert into webhooks (tenant_id, source, event_type, signature_ok, status, payload_jsonb, processed_at)
+       values ($1, 'meta_whatsapp', 'status_update', $2, 'processed', $3::jsonb, now())`,
+      [tenantId, signatureOk, JSON.stringify(payload)]
+    );
   }
 
   async reconcileMessageStatuses(tenantId: string, payload: unknown): Promise<number> {
@@ -45,7 +56,7 @@ export class WebhooksService {
       const mappedStatus = this.mapMetaStatus(status.status);
       const errorCode = status.errorCode ?? null;
 
-      const res = await this.db.query<ReconcileRow>(
+      const legacyRes = await this.db.query<ReconcileRow>(
         `with target as (
            select id, status as previous_status
            from campaign_messages
@@ -66,12 +77,53 @@ export class WebhooksService {
         [mappedStatus, errorCode, tenantId, status.messageId]
       );
 
-      const count = res.rowCount ?? 0;
-      updated += count;
+      const legacyUpdated = legacyRes.rowCount ?? 0;
+      updated += legacyUpdated;
 
-      if (count > 0) {
-        await this.incrementUsageCounters(tenantId, res.rows.map((row) => row.previous_status), mappedStatus);
+      const messageRes = await this.db.query<MessageRow>(
+        `with target as (
+           select id, status as previous_status
+           from messages
+           where tenant_id = $3
+             and provider_message_id = $4
+           for update
+         ),
+         updated as (
+           update messages m
+           set status = $1,
+               error_code = $2,
+               updated_at = now()
+           from target t
+           where m.id = t.id
+             and m.status is distinct from $1
+           returning m.id, t.previous_status
+         )
+         select id, previous_status from updated`,
+        [mappedStatus, errorCode, tenantId, status.messageId]
+      );
+
+      if (legacyUpdated > 0) {
+        await this.incrementUsageCounters(
+          tenantId,
+          legacyRes.rows.map((row) => row.previous_status),
+          mappedStatus
+        );
+      } else if ((messageRes.rowCount ?? 0) > 0) {
+        await this.incrementUsageCounters(
+          tenantId,
+          messageRes.rows.map((row) => row.previous_status),
+          mappedStatus
+        );
       }
+
+      await this.db.query(
+        `insert into message_logs (tenant_id, message_id, event_type, event_source, payload_jsonb)
+         select m.tenant_id, m.id, $1, 'meta_webhook', $2::jsonb
+         from messages m
+         where m.tenant_id = $3
+           and m.provider_message_id = $4`,
+        [`meta_${mappedStatus}`, JSON.stringify(status), tenantId, status.messageId]
+      );
     }
 
     return updated;

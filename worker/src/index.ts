@@ -21,9 +21,12 @@ type MessageSendJob = {
 
 type SendTarget = {
   campaign_message_id: string;
+  contact_id: string;
+  idempotency_key: string;
   phone_e164: string;
   wa_id: string | null;
   template_name: string;
+  language_code: string;
   plan_code: string;
 };
 
@@ -61,14 +64,19 @@ async function setupChannel(channel: Channel): Promise<void> {
 }
 
 async function processLaunchJob(db: DbClient, channel: Channel, job: CampaignLaunchJob): Promise<void> {
-  const campaignRes = await db.query<{ id: string }>(
-    'select id from campaigns where id = $1 and tenant_id = $2 limit 1',
+  const campaignRes = await db.query<{ id: string; template_name: string; language_code: string }>(
+    `select cp.id, t.name as template_name, t.language_code
+     from campaigns cp
+     inner join templates t on t.id = cp.template_id
+     where cp.id = $1 and cp.tenant_id = $2
+     limit 1`,
     [job.campaignId, job.tenantId]
   );
 
   if (campaignRes.rows.length === 0) {
     throw new Error('Campaign not found for launch');
   }
+  const campaign = campaignRes.rows[0];
 
   const contactsRes = await db.query<{ id: string }>(
     `select id from contacts
@@ -86,6 +94,35 @@ async function processLaunchJob(db: DbClient, channel: Channel, job: CampaignLau
        do update set status = 'queued'
        returning id`,
       [job.tenantId, job.campaignId, contact.id, idempotencyKey]
+    );
+
+    await db.query(
+      `insert into campaign_contacts (tenant_id, campaign_id, contact_id, status)
+       values ($1, $2, $3, 'queued')
+       on conflict (tenant_id, campaign_id, contact_id)
+       do update set status = 'queued',
+                     updated_at = now()`,
+      [job.tenantId, job.campaignId, contact.id]
+    );
+
+    await db.query(
+      `insert into messages (
+         tenant_id, campaign_id, contact_id, direction, provider, idempotency_key,
+         status, template_name, template_language_code, payload_jsonb
+       )
+       values ($1, $2, $3, 'outbound', 'meta', $4, 'queued', $5, $6, $7::jsonb)
+       on conflict (tenant_id, idempotency_key)
+       do update set status = 'queued',
+                     updated_at = now()`,
+      [
+        job.tenantId,
+        job.campaignId,
+        contact.id,
+        idempotencyKey,
+        campaign.template_name,
+        campaign.language_code,
+        JSON.stringify({ campaignMessageId: insertRes.rows[0].id })
+      ]
     );
 
     channel.sendToQueue(
@@ -117,9 +154,12 @@ async function processMessageJob(
 ): Promise<void> {
   const targetRes = await db.query<SendTarget>(
     `select cm.id as campaign_message_id,
+            cm.contact_id,
+            cm.idempotency_key,
             c.phone_e164,
             c.wa_id,
             t.name as template_name,
+            t.language_code,
             tn.plan_code
      from campaign_messages cm
      inner join contacts c on c.id = cm.contact_id
@@ -151,6 +191,16 @@ async function processMessageJob(
       [result.errorCode, target.campaign_message_id]
     );
 
+    await syncMessageMirror(db, job.tenantId, target.idempotency_key, 'failed_retryable', null, result.errorCode);
+    await appendMessageLogByIdempotency(
+      db,
+      job.tenantId,
+      target.idempotency_key,
+      'send_failed_retryable',
+      'worker',
+      { errorCode: result.errorCode }
+    );
+
     throw new Error(result.errorCode);
   }
 
@@ -160,8 +210,18 @@ async function processMessageJob(
          meta_message_id = $1,
          error_code = null,
          attempt_count = attempt_count + 1
-     where id = $2`,
+    where id = $2`,
     [result.messageId, target.campaign_message_id]
+  );
+
+  await syncMessageMirror(db, job.tenantId, target.idempotency_key, 'accepted_meta', result.messageId, null);
+  await appendMessageLogByIdempotency(
+    db,
+    job.tenantId,
+    target.idempotency_key,
+    'accepted_meta',
+    'worker',
+    { providerMessageId: result.messageId }
   );
 }
 
@@ -261,6 +321,65 @@ async function enqueueDlq(channel: Channel, queue: string, payload: object, reas
   );
 }
 
+async function syncMessageMirror(
+  db: DbClient,
+  tenantId: string,
+  idempotencyKey: string,
+  status: string,
+  providerMessageId: string | null,
+  errorCode: string | null
+): Promise<void> {
+  await db.query(
+    `update messages
+     set status = $1,
+         provider_message_id = coalesce($2, provider_message_id),
+         error_code = $3,
+         updated_at = now()
+     where tenant_id = $4
+       and idempotency_key = $5`,
+    [status, providerMessageId, errorCode, tenantId, idempotencyKey]
+  );
+}
+
+async function syncMessageMirrorByCampaignMessage(
+  db: DbClient,
+  tenantId: string,
+  campaignMessageId: string,
+  status: string,
+  errorCode: string | null
+): Promise<void> {
+  await db.query(
+    `update messages m
+     set status = $1,
+         error_code = $2,
+         updated_at = now()
+     from campaign_messages cm
+     where cm.id = $3
+       and cm.tenant_id = $4
+       and m.tenant_id = cm.tenant_id
+       and m.idempotency_key = cm.idempotency_key`,
+    [status, errorCode, campaignMessageId, tenantId]
+  );
+}
+
+async function appendMessageLogByIdempotency(
+  db: DbClient,
+  tenantId: string,
+  idempotencyKey: string,
+  eventType: string,
+  eventSource: 'worker' | 'meta_webhook' | 'api' | 'system',
+  payload: object
+): Promise<void> {
+  await db.query(
+    `insert into message_logs (tenant_id, message_id, event_type, event_source, payload_jsonb)
+     select m.tenant_id, m.id, $1, $2, $3::jsonb
+     from messages m
+     where m.tenant_id = $4
+       and m.idempotency_key = $5`,
+    [eventType, eventSource, JSON.stringify(payload), tenantId, idempotencyKey]
+  );
+}
+
 async function consumeCampaignQueue(
   channel: Channel,
   db: DbClient,
@@ -326,6 +445,13 @@ async function consumeMessageQueue(
         );
 
         await enqueueRetry(channel, MESSAGE_RETRY_QUEUE, payload, currentAttempt, error.retryAfterMs);
+        await syncMessageMirrorByCampaignMessage(
+          db,
+          payload.tenantId,
+          payload.campaignMessageId,
+          'rate_limited',
+          'rate_limited'
+        );
         metrics.incMessageRetried('message');
         channel.ack(msg);
         return;
@@ -336,6 +462,13 @@ async function consumeMessageQueue(
 
       if (nextAttempt <= MAX_ATTEMPTS) {
         await enqueueRetry(channel, MESSAGE_RETRY_QUEUE, payload, nextAttempt);
+        await syncMessageMirrorByCampaignMessage(
+          db,
+          payload.tenantId,
+          payload.campaignMessageId,
+          'failed_retryable',
+          reason
+        );
         metrics.incMessageRetried('message');
       } else {
         await db.query(
@@ -347,6 +480,13 @@ async function consumeMessageQueue(
           [reason, payload.campaignMessageId]
         );
 
+        await syncMessageMirrorByCampaignMessage(
+          db,
+          payload.tenantId,
+          payload.campaignMessageId,
+          'failed_permanent',
+          reason
+        );
         metrics.incMessageFailedPermanent();
         await enqueueDlq(channel, MESSAGE_DLQ, payload, reason);
       }
