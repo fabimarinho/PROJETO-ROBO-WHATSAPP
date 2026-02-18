@@ -15,7 +15,7 @@
 
 ## 3) Data and Migrations
 - [x] Migrações versionadas implementadas
-- [ ] Pipeline CI para validar migrações em banco limpo
+- [x] Pipeline CI para validar migrações em banco limpo
 - [ ] Política de rollback de migração (expand/contract)
 - [ ] Backups automáticos + teste de restore periódico
 
@@ -29,7 +29,7 @@
 ## 5) Testing and Quality
 - [x] Testes unitários iniciais
 - [ ] Cobertura mínima por domínio crítico (auth, campaigns, webhook, worker)
-- [ ] Testes de integração com PostgreSQL/RabbitMQ/Redis em CI
+- [x] Testes de integração com PostgreSQL/RabbitMQ/Redis em CI
 - [ ] Testes E2E de fluxo completo campanha -> entrega -> billing
 
 ## 6) Billing and Plans

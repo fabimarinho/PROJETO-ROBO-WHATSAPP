@@ -1,0 +1,148 @@
+﻿name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  api:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: robo_whatsapp
+          POSTGRES_USER: app
+          POSTGRES_PASSWORD: app123
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U app -d robo_whatsapp"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+      rabbitmq:
+        image: rabbitmq:3.13-management
+        ports:
+          - 5672:5672
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+
+    defaults:
+      run:
+        working-directory: api
+
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://app:app123@localhost:5432/robo_whatsapp
+      DB_HOST: localhost
+      DB_PORT: 5432
+      DB_NAME: robo_whatsapp
+      DB_USER: app
+      DB_PASSWORD: app123
+      RABBITMQ_URL: amqp://localhost:5672
+      REDIS_URL: redis://localhost:6379
+      JWT_SECRET: ci-secret
+      BOOTSTRAP_ADMIN_ENABLED: false
+      META_WEBHOOK_VERIFY_TOKEN: ci-verify
+      META_APP_SECRET: ci-app-secret
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: api/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Unit tests
+        run: npm run test
+
+      - name: Apply migrations on clean database
+        run: npm run migrate
+
+      - name: Migration status
+        run: npm run migrate:status
+
+      - name: Integration tests
+        run: npm run test:integration
+
+  worker:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: robo_whatsapp
+          POSTGRES_USER: app
+          POSTGRES_PASSWORD: app123
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U app -d robo_whatsapp"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+      rabbitmq:
+        image: rabbitmq:3.13-management
+        ports:
+          - 5672:5672
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://app:app123@localhost:5432/robo_whatsapp
+      DB_HOST: localhost
+      DB_PORT: 5432
+      DB_NAME: robo_whatsapp
+      DB_USER: app
+      DB_PASSWORD: app123
+      RABBITMQ_URL: amqp://localhost:5672
+      REDIS_URL: redis://localhost:6379
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+
+      - name: Install API dependencies (for migration runner)
+        working-directory: api
+        run: npm ci
+
+      - name: Apply migrations
+        working-directory: api
+        run: npm run migrate
+
+      - name: Install worker dependencies
+        working-directory: worker
+        run: npm ci
+
+      - name: Build worker
+        working-directory: worker
+        run: npm run build
+
+      - name: Unit tests
+        working-directory: worker
+        run: npm run test
+
+      - name: Integration tests
+        working-directory: worker
+        run: npm run test:integration
