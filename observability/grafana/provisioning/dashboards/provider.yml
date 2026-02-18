@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name: robo-whatsapp
+    orgId: 1
+    folder: SaaS WhatsApp
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /var/lib/grafana/dashboards

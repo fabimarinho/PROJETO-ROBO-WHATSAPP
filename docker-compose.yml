@@ -38,6 +38,7 @@
     volumes:
       - ./observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./observability/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - ./observability/prometheus/slo-rules.yml:/etc/prometheus/slo-rules.yml:ro
     depends_on:
       - alertmanager
 
@@ -58,6 +59,8 @@
       - "3001:3000"
     volumes:
       - ./observability/grafana/provisioning/datasources/datasource.yml:/etc/grafana/provisioning/datasources/datasource.yml:ro
+      - ./observability/grafana/provisioning/dashboards/provider.yml:/etc/grafana/provisioning/dashboards/provider.yml:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
 
 volumes:
   pg_data:

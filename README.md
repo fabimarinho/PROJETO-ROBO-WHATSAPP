@@ -27,3 +27,7 @@ Projeto base para uma plataforma SaaS multi-tenant de disparo automatizado via W
 - Prometheus: `http://localhost:9090`
 - Alertmanager: `http://localhost:9093`
 - Grafana: `http://localhost:3001` (datasource Prometheus provisionado automaticamente)
+- Dashboard provisionado automaticamente: `SLO Baseline - SaaS WhatsApp`
+
+## SLOs
+- Política inicial de SLO: `docs/slo-policy.md`

@@ -3,7 +3,7 @@
 Plano detalhado de execução: `docs/2-week-execution-plan.md`
 
 ## 1) Architecture and Scalability
-- [ ] Definir SLOs oficiais (API, webhook, pipeline de envio)
+- [x] Definir SLOs oficiais (API, webhook, pipeline de envio)
 - [ ] Configurar autoscaling por métricas de fila e latência
 - [ ] Validar throughput alvo com teste de carga (>= 10x volume do MVP)
 - [ ] Definir estratégia de particionamento para tabelas de alto volume

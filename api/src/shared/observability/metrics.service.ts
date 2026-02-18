@@ -6,10 +6,15 @@ type RouteMetric = {
   totalDurationMs: number;
 };
 
+const LATENCY_BUCKETS_MS = [50, 100, 200, 500, 1000, 2000, 5000];
+
 @Injectable()
 export class MetricsService {
   private readonly startedAt = Date.now();
   private readonly routes = new Map<string, RouteMetric>();
+  private readonly latencyBucketCounts = new Array<number>(LATENCY_BUCKETS_MS.length).fill(0);
+  private latencyCount = 0;
+  private latencySumMs = 0;
 
   record(route: string, method: string, statusCode: number, durationMs: number): void {
     const key = `${method} ${route}`;
@@ -19,6 +24,14 @@ export class MetricsService {
     current.totalDurationMs += durationMs;
     if (statusCode >= 500) {
       current.errors += 1;
+    }
+
+    this.latencyCount += 1;
+    this.latencySumMs += durationMs;
+    for (let i = 0; i < LATENCY_BUCKETS_MS.length; i += 1) {
+      if (durationMs <= LATENCY_BUCKETS_MS[i]) {
+        this.latencyBucketCounts[i] += 1;
+      }
     }
 
     this.routes.set(key, current);
@@ -74,6 +87,15 @@ export class MetricsService {
       const escaped = route.route.replace(/"/g, '\\"');
       lines.push(`app_route_requests_total{route="${escaped}"} ${route.count}`);
     }
+
+    lines.push('# HELP app_request_duration_ms HTTP request latency histogram in milliseconds');
+    lines.push('# TYPE app_request_duration_ms histogram');
+    for (let i = 0; i < LATENCY_BUCKETS_MS.length; i += 1) {
+      lines.push(`app_request_duration_ms_bucket{le="${LATENCY_BUCKETS_MS[i]}"} ${this.latencyBucketCounts[i]}`);
+    }
+    lines.push(`app_request_duration_ms_bucket{le="+Inf"} ${this.latencyCount}`);
+    lines.push(`app_request_duration_ms_sum ${this.latencySumMs}`);
+    lines.push(`app_request_duration_ms_count ${this.latencyCount}`);
 
     return lines.join('\n');
   }

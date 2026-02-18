@@ -1,0 +1,16 @@
+groups:
+  - name: robo_whatsapp_sli
+    rules:
+      - record: app:availability_ratio_5m
+        expr: |
+          1 - (
+            increase(app_errors_total[5m]) /
+            clamp_min(increase(app_requests_total[5m]), 1)
+          )
+
+      - record: app:request_latency_p95_ms_5m
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(app_request_duration_ms_bucket[5m]))
+          )
