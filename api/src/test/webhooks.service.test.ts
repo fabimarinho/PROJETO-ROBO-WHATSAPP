@@ -1,0 +1,58 @@
+﻿import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
+import { createHmac } from 'node:crypto';
+import { WebhooksService } from '../modules/webhooks/webhooks.service';
+
+class FakeDb {
+  public calls: Array<{ text: string; values: unknown[] }> = [];
+
+  async query(text: string, values: unknown[] = []): Promise<{ rowCount: number; rows: Array<{ status: string }> }> {
+    this.calls.push({ text, values });
+
+    if (text.includes('select status from updated')) {
+      return { rowCount: 1, rows: [{ status: 'delivered' }] };
+    }
+
+    return { rowCount: 1, rows: [] };
+  }
+}
+
+describe('WebhooksService', () => {
+  it('validates HMAC signature', async () => {
+    process.env.META_APP_SECRET = 'secret-key';
+    const body = Buffer.from('{"ok":true}');
+    const signature = `sha256=${createHmac('sha256', 'secret-key').update(body).digest('hex')}`;
+
+    const service = new WebhooksService(new FakeDb() as never);
+    const valid = await service.verifySignature(body, signature);
+
+    assert.equal(valid, true);
+  });
+
+  it('reconciles statuses and writes billing counters', async () => {
+    const db = new FakeDb();
+    const service = new WebhooksService(db as never);
+
+    const payload = {
+      entry: [
+        {
+          changes: [
+            {
+              value: {
+                statuses: [{ id: 'wamid.123', status: 'delivered' }]
+              }
+            }
+          ]
+        }
+      ]
+    };
+
+    const updated = await service.reconcileMessageStatuses('tenant-1', payload);
+
+    assert.equal(updated, 1);
+    assert.equal(
+      db.calls.some((call) => call.text.includes('insert into usage_counters')),
+      true
+    );
+  });
+});

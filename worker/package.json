@@ -4,7 +4,8 @@
   "private": true,
   "scripts": {
     "start": "ts-node src/index.ts",
-    "build": "tsc -p tsconfig.json"
+    "build": "tsc -p tsconfig.json",
+    "test": "tsx --test src/test/**/*.test.ts"
   },
   "dependencies": {
     "amqplib": "^0.10.5",
@@ -17,6 +18,7 @@
     "@types/node": "^22.10.2",
     "@types/pg": "^8.11.10",
     "ts-node": "^10.9.2",
+    "tsx": "^4.19.2",
     "typescript": "^5.6.3"
   }
 }

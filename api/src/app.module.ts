@@ -1,4 +1,4 @@
-﻿import { Module } from '@nestjs/common';
+﻿import { MiddlewareConsumer, Module, NestModule, RequestMethod } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { HealthController } from './modules/health/health.controller';
 import { TenantsController } from './modules/tenants/tenants.controller';
@@ -15,11 +15,15 @@ import { WebhooksController } from './modules/webhooks/webhooks.controller';
 import { WebhooksService } from './modules/webhooks/webhooks.service';
 import { ContactsController } from './modules/contacts/contacts.controller';
 import { ContactsService } from './modules/contacts/contacts.service';
+import { MetricsController } from './modules/metrics/metrics.controller';
+import { MetricsService } from './shared/observability/metrics.service';
+import { RequestLoggingMiddleware } from './shared/observability/request-logging.middleware';
 
 @Module({
   imports: [],
   controllers: [
     HealthController,
+    MetricsController,
     AuthController,
     TenantsController,
     CampaignsController,
@@ -29,6 +33,7 @@ import { ContactsService } from './modules/contacts/contacts.service';
   providers: [
     PostgresService,
     RabbitPublisherService,
+    MetricsService,
     TenantsService,
     CampaignsService,
     AuthService,
@@ -44,4 +49,8 @@ import { ContactsService } from './modules/contacts/contacts.service';
     }
   ]
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer): void {
+    consumer.apply(RequestLoggingMiddleware).forRoutes({ path: '*', method: RequestMethod.ALL });
+  }
+}
