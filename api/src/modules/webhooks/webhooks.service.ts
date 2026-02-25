@@ -13,6 +13,8 @@ type MessageRow = {
   previous_status: string;
 };
 
+const LEGACY_FLOW_ENABLED = process.env.PHASE2_LEGACY_FLOW_ENABLED !== 'false';
+
 @Injectable()
 export class WebhooksService {
   constructor(private readonly db: PostgresService) {}
@@ -35,13 +37,17 @@ export class WebhooksService {
   }
 
   async storeEvent(tenantId: string, payload: unknown, signatureOk: boolean): Promise<void> {
-    await this.db.query(
-      `insert into webhook_events (tenant_id, source, payload_jsonb, signature_ok, processed_at)
-       values ($1, 'meta_whatsapp', $2::jsonb, $3, now())`,
-      [tenantId, JSON.stringify(payload), signatureOk]
-    );
+    if (LEGACY_FLOW_ENABLED) {
+      await this.db.queryForTenant(
+        tenantId,
+        `insert into webhook_events (tenant_id, source, payload_jsonb, signature_ok, processed_at)
+         values ($1, 'meta_whatsapp', $2::jsonb, $3, now())`,
+        [tenantId, JSON.stringify(payload), signatureOk]
+      );
+    }
 
-    await this.db.query(
+    await this.db.queryForTenant(
+      tenantId,
       `insert into webhooks (tenant_id, source, event_type, signature_ok, status, payload_jsonb, processed_at)
        values ($1, 'meta_whatsapp', 'status_update', $2, 'processed', $3::jsonb, now())`,
       [tenantId, signatureOk, JSON.stringify(payload)]
@@ -55,32 +61,34 @@ export class WebhooksService {
     for (const status of statuses) {
       const mappedStatus = this.mapMetaStatus(status.status);
       const errorCode = status.errorCode ?? null;
-
-      const legacyRes = await this.db.query<ReconcileRow>(
-        `with target as (
-           select id, status as previous_status
-           from campaign_messages
-           where tenant_id = $3
-             and meta_message_id = $4
-           for update
-         ),
-         updated as (
-           update campaign_messages cm
-           set status = $1,
-               error_code = $2
-           from target t
-           where cm.id = t.id
-             and cm.status is distinct from $1
-           returning t.previous_status
-         )
-         select previous_status from updated`,
-        [mappedStatus, errorCode, tenantId, status.messageId]
-      );
+      const legacyRes = LEGACY_FLOW_ENABLED
+        ? await this.db.queryForTenant<ReconcileRow>(
+            tenantId,
+            `with target as (
+               select id, status as previous_status
+               from campaign_messages
+               where tenant_id = $3
+                 and meta_message_id = $4
+               for update
+             ),
+             updated as (
+               update campaign_messages cm
+               set status = $1,
+                   error_code = $2
+               from target t
+               where cm.id = t.id
+                 and cm.status is distinct from $1
+               returning t.previous_status
+             )
+             select previous_status from updated`,
+            [mappedStatus, errorCode, tenantId, status.messageId]
+          )
+        : { rowCount: 0, rows: [] };
 
       const legacyUpdated = legacyRes.rowCount ?? 0;
-      updated += legacyUpdated;
 
-      const messageRes = await this.db.query<MessageRow>(
+      const messageRes = await this.db.queryForTenant<MessageRow>(
+        tenantId,
         `with target as (
            select id, status as previous_status
            from messages
@@ -101,22 +109,27 @@ export class WebhooksService {
          select id, previous_status from updated`,
         [mappedStatus, errorCode, tenantId, status.messageId]
       );
+      const messageUpdated = messageRes.rowCount ?? 0;
+      const preferredUpdated = messageUpdated > 0 ? messageUpdated : legacyUpdated;
 
-      if (legacyUpdated > 0) {
-        await this.incrementUsageCounters(
-          tenantId,
-          legacyRes.rows.map((row) => row.previous_status),
-          mappedStatus
-        );
-      } else if ((messageRes.rowCount ?? 0) > 0) {
+      updated += preferredUpdated;
+
+      if (messageUpdated > 0) {
         await this.incrementUsageCounters(
           tenantId,
           messageRes.rows.map((row) => row.previous_status),
           mappedStatus
         );
+      } else if (legacyUpdated > 0) {
+        await this.incrementUsageCounters(
+          tenantId,
+          legacyRes.rows.map((row) => row.previous_status),
+          mappedStatus
+        );
       }
 
-      await this.db.query(
+      await this.db.queryForTenant(
+        tenantId,
         `insert into message_logs (tenant_id, message_id, event_type, event_source, payload_jsonb)
          select m.tenant_id, m.id, $1, 'meta_webhook', $2::jsonb
          from messages m
@@ -158,7 +171,8 @@ export class WebhooksService {
       return;
     }
 
-    await this.db.query(
+    await this.db.queryForTenant(
+      tenantId,
       `insert into usage_counters (tenant_id, period_day, sent_count, delivered_count, failed_count, billable_count)
        values ($1, current_date, $2, $3, $4, $5)
        on conflict (tenant_id, period_day)

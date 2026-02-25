@@ -1,9 +1,9 @@
-﻿import { Injectable, InternalServerErrorException, UnauthorizedException } from '@nestjs/common';
+import { Injectable, InternalServerErrorException, UnauthorizedException } from '@nestjs/common';
 import { compare, hash } from 'bcryptjs';
 import { randomUUID } from 'node:crypto';
-import { sign } from 'jsonwebtoken';
+import { sign, verify } from 'jsonwebtoken';
 import { PostgresService } from '../../shared/database/postgres.service';
-import { AuthUser, TenantMembership, UserRole } from '../../shared/auth/auth.types';
+import { AuthUser, RefreshTokenPayload, TenantMembership, UserRole } from '../../shared/auth/auth.types';
 
 type DbUser = {
   id: string;
@@ -22,7 +22,7 @@ export class AuthService {
 
   constructor(private readonly db: PostgresService) {}
 
-  async login(email: string, password: string): Promise<{ accessToken: string; user: AuthUser }> {
+  async login(email: string, password: string): Promise<{ accessToken: string; refreshToken: string; user: AuthUser }> {
     await this.ensureBootstrapUser();
 
     const userRes = await this.db.query<DbUser>(
@@ -41,29 +41,61 @@ export class AuthService {
     }
 
     const memberships = await this.getMemberships(user.id);
-
-    const jwtSecret = process.env.JWT_SECRET;
-    if (!jwtSecret) {
-      throw new InternalServerErrorException('JWT secret is not configured');
-    }
-
-    const token = sign(
-      {
-        sub: user.id,
-        email: user.email,
-        memberships
-      },
-      jwtSecret,
-      { expiresIn: '8h' }
-    );
+    const authUser: AuthUser = {
+      userId: user.id,
+      email: user.email,
+      memberships
+    };
 
     return {
-      accessToken: token,
-      user: {
-        userId: user.id,
-        email: user.email,
-        memberships
-      }
+      accessToken: this.issueAccessToken(authUser),
+      refreshToken: await this.issueRefreshToken(user.id),
+      user: authUser
+    };
+  }
+
+  async refresh(refreshToken: string): Promise<{ accessToken: string; refreshToken: string; user: AuthUser }> {
+    const refreshSecret = process.env.JWT_REFRESH_SECRET ?? process.env.JWT_SECRET;
+    if (!refreshSecret) {
+      throw new InternalServerErrorException('JWT refresh secret is not configured');
+    }
+
+    let payload: RefreshTokenPayload;
+    try {
+      payload = verify(refreshToken, refreshSecret) as RefreshTokenPayload;
+    } catch {
+      throw new UnauthorizedException('Invalid refresh token');
+    }
+
+    if (payload.typ !== 'refresh' || !payload.tokenId || !payload.sub) {
+      throw new UnauthorizedException('Invalid refresh token');
+    }
+
+    const tokenRes = await this.db.query<{ id: string; token_hash: string }>(
+      `select id, token_hash
+       from refresh_tokens
+       where id = $1 and user_id = $2 and revoked_at is null and expires_at > now()
+       limit 1`,
+      [payload.tokenId, payload.sub]
+    );
+
+    const tokenRow = tokenRes.rows[0];
+    if (!tokenRow) {
+      throw new UnauthorizedException('Refresh token expired or revoked');
+    }
+
+    const valid = await compare(refreshToken, tokenRow.token_hash);
+    if (!valid) {
+      throw new UnauthorizedException('Invalid refresh token');
+    }
+
+    await this.db.query('update refresh_tokens set revoked_at = now() where id = $1', [payload.tokenId]);
+
+    const user = await this.getUserOrThrow(payload.sub);
+    return {
+      accessToken: this.issueAccessToken(user),
+      refreshToken: await this.issueRefreshToken(user.userId),
+      user
     };
   }
 
@@ -89,7 +121,6 @@ export class AuthService {
     }
 
     const memberships = await this.getMemberships(user.id);
-
     return {
       userId: user.id,
       email: user.email,
@@ -109,6 +140,69 @@ export class AuthService {
       tenantId: item.tenant_id,
       role: item.role
     }));
+  }
+
+  private issueAccessToken(user: AuthUser): string {
+    const jwtSecret = process.env.JWT_SECRET;
+    if (!jwtSecret) {
+      throw new InternalServerErrorException('JWT secret is not configured');
+    }
+
+    return sign(
+      {
+        sub: user.userId,
+        email: user.email,
+        memberships: user.memberships,
+        typ: 'access'
+      },
+      jwtSecret,
+      { expiresIn: this.resolveAccessTtlInSeconds() }
+    );
+  }
+
+  private async issueRefreshToken(userId: string): Promise<string> {
+    const refreshSecret = process.env.JWT_REFRESH_SECRET ?? process.env.JWT_SECRET;
+    if (!refreshSecret) {
+      throw new InternalServerErrorException('JWT refresh secret is not configured');
+    }
+
+    const tokenId = randomUUID();
+    const refreshToken = sign(
+      {
+        sub: userId,
+        tokenId,
+        typ: 'refresh'
+      },
+      refreshSecret,
+      { expiresIn: this.resolveRefreshTtlInSeconds() }
+    );
+
+    const tokenHash = await hash(refreshToken, 10);
+    await this.db.query(
+      `insert into refresh_tokens (id, user_id, token_hash, expires_at)
+       values ($1, $2, $3, now() + ($4 || ' seconds')::interval)`,
+      [tokenId, userId, tokenHash, this.resolveRefreshTtlInSeconds()]
+    );
+
+    return refreshToken;
+  }
+
+  private resolveRefreshTtlInSeconds(): number {
+    const raw = process.env.JWT_REFRESH_TTL_SECONDS;
+    if (!raw) {
+      return 30 * 24 * 60 * 60;
+    }
+    const value = Number(raw);
+    return Number.isFinite(value) && value > 0 ? value : 30 * 24 * 60 * 60;
+  }
+
+  private resolveAccessTtlInSeconds(): number {
+    const raw = process.env.JWT_ACCESS_TTL_SECONDS;
+    if (!raw) {
+      return 8 * 60 * 60;
+    }
+    const value = Number(raw);
+    return Number.isFinite(value) && value > 0 ? value : 8 * 60 * 60;
   }
 
   private async ensureBootstrapUser(): Promise<void> {

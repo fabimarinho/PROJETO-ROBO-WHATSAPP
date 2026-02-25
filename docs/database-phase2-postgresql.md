@@ -93,3 +93,31 @@
 - Security:
   - Encryption at rest and in transit.
   - Least-privilege access for backup/restore operators.
+
+## Hardening Pack (Phase 2.1)
+- Migration: `sql/migrations/0004_phase2_hardening_tenant_integrity_rls.sql`
+- Strict RLS migration: `sql/migrations/0005_phase2_rls_strict_business_tables.sql`
+- Constraint validation migration: `sql/migrations/0006_phase2_validate_tenant_constraints.sql`
+- Objectives:
+  - Enforce tenant-safe referential integrity with composite FKs (`tenant_id`, `id`).
+  - Standardize `updated_at` via trigger on mutable tables.
+  - Enable Row Level Security on tenant-scoped tables.
+  - Add extra read-path indexes for high-volume logs/events.
+
+### RLS session contract
+- Application sessions should set tenant context before queries:
+  - `set app.tenant_id = '<tenant-uuid>';`
+- Current policy is compatibility mode:
+  - if `app.tenant_id` is absent, access is allowed (admin/migration sessions).
+- Production tightening (recommended after rollout):
+  - enforce tenant context in app role and move to strict deny when unset.
+  - migration `0005` applies strict mode on business tenant tables.
+
+### Constraint rollout
+- Tenant-safe FKs are added as `NOT VALID`:
+  - new writes are enforced immediately;
+  - legacy rows are validated in controlled windows.
+- Suggested command per table after data cleanup:
+  - `alter table <table_name> validate constraint <constraint_name>;`
+- Finalization:
+  - migration `0006` validates all tenant-safe FKs and closes the Phase 2 integrity rollout.

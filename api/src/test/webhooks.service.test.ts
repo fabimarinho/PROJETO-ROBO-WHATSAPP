@@ -9,14 +9,30 @@ class FakeDb {
   async query(
     text: string,
     values: unknown[] = []
-  ): Promise<{ rowCount: number; rows: Array<{ previous_status: string }> }> {
+  ): Promise<{ rowCount: number; rows: Array<{ id?: string; previous_status: string }> }> {
     this.calls.push({ text, values });
+
+    if (text.includes('from campaign_messages')) {
+      return { rowCount: 0, rows: [] };
+    }
+
+    if (text.includes('from messages')) {
+      return { rowCount: 1, rows: [{ id: 'message-1', previous_status: 'sent' }] };
+    }
 
     if (text.includes('select previous_status from updated')) {
       return { rowCount: 1, rows: [{ previous_status: 'sent' }] };
     }
 
     return { rowCount: 1, rows: [] };
+  }
+
+  queryForTenant(
+    _tenantId: string,
+    text: string,
+    values: unknown[] = []
+  ): Promise<{ rowCount: number; rows: Array<{ id?: string; previous_status: string }> }> {
+    return this.query(text, values);
   }
 }
 
@@ -32,7 +48,7 @@ describe('WebhooksService', () => {
     assert.equal(valid, true);
   });
 
-  it('reconciles statuses and writes billing counters idempotently', async () => {
+  it('reconciles statuses from messages table and writes billing counters idempotently', async () => {
     const db = new FakeDb();
     const service = new WebhooksService(db as never);
 

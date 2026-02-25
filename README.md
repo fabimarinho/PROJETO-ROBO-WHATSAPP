@@ -1,38 +1,59 @@
-﻿# SaaS WhatsApp Cloud API
+# SaaS WhatsApp Cloud API - Backend (Fase 3)
 
-Projeto base para uma plataforma SaaS multi-tenant de disparo automatizado via WhatsApp Business Cloud API.
+Backend SaaS multi-tenant com NestJS + Node.js, seguindo Clean Architecture/DDD em módulos de domínio.
 
-## Stack
-- API: NestJS + TypeScript
-- Worker: Node.js + TypeScript
-- Banco: PostgreSQL
-- Cache/Rate limit: Redis
-- Fila: RabbitMQ
-- Observabilidade: Prometheus + Alertmanager + Grafana
+## Módulos
+- `auth`: login JWT + refresh token rotativo.
+- `users`: gestão de usuários por tenant.
+- `tenants`: lifecycle de tenants e memberships.
+- `campaigns`: criação e lançamento de campanhas.
+- `contacts`: cadastro/importação de contatos.
+- `messaging`: orquestração de envio template WhatsApp.
+- `billing`: leitura de consumo por tenant.
+- `webhooks`: recebimento de eventos Meta/WhatsApp.
+- `queue`: produtor BullMQ.
+
+## Requisitos implementados
+- JWT access token + refresh token.
+- RBAC por papel (`owner`, `admin`, `operator`, `viewer`).
+- Rate limit por tenant com Redis (fallback local in-memory).
+- Logs estruturados JSON.
+- Interceptors globais (logging HTTP e envelope de resposta).
+- Middlewares de segurança (helmet + request-id).
+- Integração WhatsApp Business Cloud API.
+- Webhook da Meta com validação de assinatura.
+- BullMQ com worker isolado, retry/backoff, delay aleatório, concorrência e DLQ.
 
 ## Estrutura
-- `docs/architecture.md`: arquitetura técnica
-- `sql/migrations/`: migrações versionadas
-- `api/`: aplicação HTTP (BFF/API)
-- `worker/`: consumidores de fila e envio assíncrono
-- `docker-compose.yml`: ambiente local
+- `api/src/modules/*`: módulos de domínio.
+- `api/src/shared/*`: cross-cutting concerns.
+- `worker/src/bullmq-worker.ts`: worker BullMQ isolado.
+- `sql/migrations/*`: migrações versionadas.
+- `docker-compose.yml`: stack local completa.
 
-## Ambiente local
-1. Copie `.env.example` para `.env` em `api/` e `worker/`.
-2. Execute `docker compose up -d`.
-3. Execute migrações: `cd api && npm run migrate`.
-4. Inicie API e worker.
+## Setup local
+1. Copie:
+   - `.env.example` -> `.env` (raiz)
+   - `api/.env.example` -> `api/.env`
+   - `worker/.env.example` -> `worker/.env`
+2. Suba infra/app:
+   - `docker compose up -d`
+3. Rodar manualmente sem docker (opcional):
+   - API: `npm run migrate --prefix api` e `npm run start --prefix api`
+   - Worker: `npm run start:bullmq --prefix worker`
 
-## Observabilidade local
-- Prometheus: `http://localhost:9090`
-- Alertmanager: `http://localhost:9093`
-- Grafana: `http://localhost:3001` (datasource Prometheus provisionado automaticamente)
-- Dashboard provisionado automaticamente: `SLO Baseline - SaaS WhatsApp`
+## Comandos úteis
+- `npm run test --prefix api`
+- `npm run test:integration --prefix api`
+- `npm run test --prefix worker`
+- `npm run test:integration --prefix worker`
+- `npm run build --prefix api`
+- `npm run build --prefix worker`
 
-## SLOs
-- Política inicial de SLO: `docs/slo-policy.md`
+## Migrações da fase 3
+- `0007_auth_refresh_tokens.sql`: persistência de refresh tokens.
 
-## Database Phase 2
-- Modelo e ER textual: `docs/database-phase2-postgresql.md`
-- Migration evolutiva: `sql/migrations/0003_saas_multitenant_phase2.sql`
-- Script completo (bootstrap): `sql/phase2_full_schema.sql`
+## Observações arquiteturais
+- Isolamento multi-tenant por `tenant_id` + RLS.
+- Contrato de sessão de tenant via `SET LOCAL app.tenant_id` transacional.
+- Fila principal BullMQ em Redis com DLQ lógica (`message.send.dlq`).

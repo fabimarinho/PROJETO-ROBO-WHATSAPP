@@ -10,8 +10,16 @@ export class AuthController {
 
   @Public()
   @Post('login')
-  login(@Body() body: { email: string; password: string }): Promise<{ accessToken: string; user: AuthUser }> {
+  login(
+    @Body() body: { email: string; password: string }
+  ): Promise<{ accessToken: string; refreshToken: string; user: AuthUser }> {
     return this.authService.login(body.email, body.password);
+  }
+
+  @Public()
+  @Post('refresh')
+  refresh(@Body() body: { refreshToken: string }): Promise<{ accessToken: string; refreshToken: string; user: AuthUser }> {
+    return this.authService.refresh(body.refreshToken);
   }
 
   @Get('me')

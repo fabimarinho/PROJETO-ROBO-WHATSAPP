@@ -1,6 +1,6 @@
-﻿import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { PostgresService } from '../../shared/database/postgres.service';
-import { RabbitPublisherService } from '../../shared/messaging/rabbit-publisher.service';
+import { QueueService } from '../queue/queue.service';
 import { Campaign, CampaignLog, CampaignMetrics } from './campaign.model';
 
 type DbCampaign = {
@@ -31,7 +31,7 @@ type DbCampaignLog = {
 export class CampaignsService {
   constructor(
     private readonly db: PostgresService,
-    private readonly publisher: RabbitPublisherService
+    private readonly queue: QueueService
   ) {}
 
   async create(input: {
@@ -40,7 +40,8 @@ export class CampaignsService {
     templateName: string;
     createdBy: string;
   }): Promise<Campaign> {
-    const templateRes = await this.db.query<{ id: string }>(
+    const templateRes = await this.db.queryForTenant<{ id: string }>(
+      input.tenantId,
       `insert into templates (tenant_id, name, language_code, category, status)
        values ($1, $2, 'pt_BR', 'MARKETING', 'approved')
        on conflict (tenant_id, name, language_code)
@@ -51,7 +52,8 @@ export class CampaignsService {
 
     const templateId = templateRes.rows[0].id;
 
-    const campaignRes = await this.db.query<DbCampaign>(
+    const campaignRes = await this.db.queryForTenant<DbCampaign>(
+      input.tenantId,
       `insert into campaigns (tenant_id, name, template_id, status, created_by)
        values ($1, $2, $3, 'draft', $4)
        returning id, tenant_id, name, status, created_at,
@@ -65,14 +67,15 @@ export class CampaignsService {
   async launch(tenantId: string, campaignId: string): Promise<Campaign> {
     const exists = await this.getOrThrow(tenantId, campaignId);
 
-    await this.db.query(
+    await this.db.queryForTenant(
+      tenantId,
       `update campaigns
        set status = 'running'
        where id = $1 and tenant_id = $2`,
       [campaignId, tenantId]
     );
 
-    await this.publisher.publish(process.env.RABBITMQ_CAMPAIGN_QUEUE ?? 'campaign.launch', {
+    await this.queue.enqueueCampaignLaunch({
       tenantId,
       campaignId,
       requestedAt: new Date().toISOString(),
@@ -88,7 +91,8 @@ export class CampaignsService {
   async getMetrics(tenantId: string, campaignId: string): Promise<CampaignMetrics> {
     await this.getOrThrow(tenantId, campaignId);
 
-    const metricsFromMessages = await this.db.query<DbMetrics>(
+    const metricsFromMessages = await this.db.queryForTenant<DbMetrics>(
+      tenantId,
       `select
         count(*) filter (where status = 'queued')::text as queued,
         count(*) filter (where status in ('sent','accepted_meta'))::text as sent,
@@ -120,7 +124,8 @@ export class CampaignsService {
       };
     }
 
-    const metricsFromLegacy = await this.db.query<DbMetrics>(
+    const metricsFromLegacy = await this.db.queryForTenant<DbMetrics>(
+      tenantId,
       `select
         count(*) filter (where status = 'queued')::text as queued,
         count(*) filter (where status in ('sent','accepted_meta'))::text as sent,
@@ -142,7 +147,8 @@ export class CampaignsService {
   }
 
   async listByTenant(tenantId: string): Promise<Campaign[]> {
-    const res = await this.db.query<DbCampaign>(
+    const res = await this.db.queryForTenant<DbCampaign>(
+      tenantId,
       `select c.id, c.tenant_id, c.name, c.status, c.created_at, t.name as template_name
        from campaigns c
        inner join templates t on t.id = c.template_id
@@ -160,7 +166,8 @@ export class CampaignsService {
 
     const safeLimit = Math.min(Math.max(limit, 1), 500);
 
-    const logsFromMessageModel = await this.db.query<DbCampaignLog>(
+    const logsFromMessageModel = await this.db.queryForTenant<DbCampaignLog>(
+      tenantId,
       `select m.id as message_id,
               ml.event_type,
               ml.event_source,
@@ -185,7 +192,8 @@ export class CampaignsService {
       }));
     }
 
-    const logsFromLegacy = await this.db.query<DbCampaignLog>(
+    const logsFromLegacy = await this.db.queryForTenant<DbCampaignLog>(
+      tenantId,
       `select null::uuid as message_id,
               'legacy_webhook_event'::varchar as event_type,
               'meta_webhook'::varchar as event_source,
@@ -208,7 +216,8 @@ export class CampaignsService {
   }
 
   private async getOrThrow(tenantId: string, campaignId: string): Promise<Campaign> {
-    const res = await this.db.query<DbCampaign>(
+    const res = await this.db.queryForTenant<DbCampaign>(
+      tenantId,
       `select c.id, c.tenant_id, c.name, c.status, c.created_at, t.name as template_name
        from campaigns c
        inner join templates t on t.id = c.template_id

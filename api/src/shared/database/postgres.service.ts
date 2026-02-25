@@ -28,6 +28,31 @@ export class PostgresService implements OnModuleDestroy {
     return this.pool.query<T>(text, values);
   }
 
+  async queryForTenant<T extends QueryResultRow = QueryResultRow>(
+    tenantId: string,
+    text: string,
+    values: unknown[] = []
+  ): Promise<QueryResult<T>> {
+    const client = await this.pool.connect();
+
+    try {
+      await client.query('begin');
+      await client.query("set local app.tenant_id = $1", [tenantId]);
+      const result = await client.query<T>(text, values);
+      await client.query('commit');
+      return result;
+    } catch (error) {
+      try {
+        await client.query('rollback');
+      } catch {
+        // no-op
+      }
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   async onModuleDestroy(): Promise<void> {
     await this.pool.end();
   }

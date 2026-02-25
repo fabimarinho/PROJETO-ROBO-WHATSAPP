@@ -15,4 +15,11 @@ export type AccessTokenPayload = {
   sub: string;
   email: string;
   memberships: TenantMembership[];
+  typ: 'access';
+};
+
+export type RefreshTokenPayload = {
+  sub: string;
+  tokenId: string;
+  typ: 'refresh';
 };

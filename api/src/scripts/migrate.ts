@@ -53,7 +53,7 @@ async function main(): Promise<void> {
         continue;
       }
 
-      const sql = readFileSync(resolve(migrationsDir, file), 'utf8');
+      const sql = readFileSync(resolve(migrationsDir, file), 'utf8').replace(/^\uFEFF/, '');
       const client = await pool.connect();
 
       try {

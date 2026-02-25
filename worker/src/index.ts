@@ -15,12 +15,14 @@ type CampaignLaunchJob = {
 type MessageSendJob = {
   tenantId: string;
   campaignId: string;
-  campaignMessageId: string;
+  campaignMessageId?: string;
+  messageId?: string;
   attempt?: number;
 };
 
 type SendTarget = {
-  campaign_message_id: string;
+  campaign_message_id: string | null;
+  message_id: string | null;
   contact_id: string;
   idempotency_key: string;
   phone_e164: string;
@@ -40,6 +42,7 @@ const MESSAGE_DLQ = `${MESSAGE_QUEUE}.dlq`;
 
 const MAX_ATTEMPTS = Number(process.env.WORKER_MAX_ATTEMPTS ?? 3);
 const QUEUE_DEPTH_INTERVAL_MS = Number(process.env.WORKER_QUEUE_DEPTH_INTERVAL_MS ?? 15000);
+const LEGACY_FLOW_ENABLED = process.env.PHASE2_LEGACY_FLOW_ENABLED !== 'false';
 
 async function setupChannel(channel: Channel): Promise<void> {
   const campaignRetryArgs: Options.AssertQueue['arguments'] = {
@@ -64,7 +67,8 @@ async function setupChannel(channel: Channel): Promise<void> {
 }
 
 async function processLaunchJob(db: DbClient, channel: Channel, job: CampaignLaunchJob): Promise<void> {
-  const campaignRes = await db.query<{ id: string; template_name: string; language_code: string }>(
+  const campaignRes = await db.queryForTenant<{ id: string; template_name: string; language_code: string }>(
+    job.tenantId,
     `select cp.id, t.name as template_name, t.language_code
      from campaigns cp
      inner join templates t on t.id = cp.template_id
@@ -78,7 +82,8 @@ async function processLaunchJob(db: DbClient, channel: Channel, job: CampaignLau
   }
   const campaign = campaignRes.rows[0];
 
-  const contactsRes = await db.query<{ id: string }>(
+  const contactsRes = await db.queryForTenant<{ id: string }>(
+    job.tenantId,
     `select id from contacts
      where tenant_id = $1 and consent_status in ('opted_in', 'unknown')`,
     [job.tenantId]
@@ -86,17 +91,24 @@ async function processLaunchJob(db: DbClient, channel: Channel, job: CampaignLau
 
   for (const contact of contactsRes.rows) {
     const idempotencyKey = `${job.campaignId}:${contact.id}`;
+    let campaignMessageId: string | undefined;
 
-    const insertRes = await db.query<{ id: string }>(
-      `insert into campaign_messages (tenant_id, campaign_id, contact_id, idempotency_key, status)
-       values ($1, $2, $3, $4, 'queued')
-       on conflict (tenant_id, idempotency_key)
-       do update set status = 'queued'
-       returning id`,
-      [job.tenantId, job.campaignId, contact.id, idempotencyKey]
-    );
+    if (LEGACY_FLOW_ENABLED) {
+      const insertRes = await db.queryForTenant<{ id: string }>(
+        job.tenantId,
+        `insert into campaign_messages (tenant_id, campaign_id, contact_id, idempotency_key, status)
+         values ($1, $2, $3, $4, 'queued')
+         on conflict (tenant_id, idempotency_key)
+         do update set status = 'queued'
+         returning id`,
+        [job.tenantId, job.campaignId, contact.id, idempotencyKey]
+      );
 
-    await db.query(
+      campaignMessageId = insertRes.rows[0].id;
+    }
+
+    await db.queryForTenant(
+      job.tenantId,
       `insert into campaign_contacts (tenant_id, campaign_id, contact_id, status)
        values ($1, $2, $3, 'queued')
        on conflict (tenant_id, campaign_id, contact_id)
@@ -105,7 +117,8 @@ async function processLaunchJob(db: DbClient, channel: Channel, job: CampaignLau
       [job.tenantId, job.campaignId, contact.id]
     );
 
-    await db.query(
+    const messageRes = await db.queryForTenant<{ id: string }>(
+      job.tenantId,
       `insert into messages (
          tenant_id, campaign_id, contact_id, direction, provider, idempotency_key,
          status, template_name, template_language_code, payload_jsonb
@@ -113,7 +126,8 @@ async function processLaunchJob(db: DbClient, channel: Channel, job: CampaignLau
        values ($1, $2, $3, 'outbound', 'meta', $4, 'queued', $5, $6, $7::jsonb)
        on conflict (tenant_id, idempotency_key)
        do update set status = 'queued',
-                     updated_at = now()`,
+                     updated_at = now()
+       returning id`,
       [
         job.tenantId,
         job.campaignId,
@@ -121,9 +135,10 @@ async function processLaunchJob(db: DbClient, channel: Channel, job: CampaignLau
         idempotencyKey,
         campaign.template_name,
         campaign.language_code,
-        JSON.stringify({ campaignMessageId: insertRes.rows[0].id })
+        JSON.stringify({ campaignMessageId: campaignMessageId ?? null })
       ]
     );
+    const messageId = messageRes.rows[0].id;
 
     channel.sendToQueue(
       MESSAGE_QUEUE,
@@ -131,7 +146,8 @@ async function processLaunchJob(db: DbClient, channel: Channel, job: CampaignLau
         JSON.stringify({
           tenantId: job.tenantId,
           campaignId: job.campaignId,
-          campaignMessageId: insertRes.rows[0].id,
+          campaignMessageId,
+          messageId,
           attempt: 1
         } satisfies MessageSendJob)
       ),
@@ -152,24 +168,47 @@ async function processMessageJob(
   limiter: PlanRateLimiter,
   job: MessageSendJob
 ): Promise<void> {
-  const targetRes = await db.query<SendTarget>(
-    `select cm.id as campaign_message_id,
-            cm.contact_id,
-            cm.idempotency_key,
-            c.phone_e164,
-            c.wa_id,
-            t.name as template_name,
-            t.language_code,
-            tn.plan_code
-     from campaign_messages cm
-     inner join contacts c on c.id = cm.contact_id
-     inner join campaigns cp on cp.id = cm.campaign_id
-     inner join templates t on t.id = cp.template_id
-     inner join tenants tn on tn.id = cm.tenant_id
-     where cm.id = $1 and cm.tenant_id = $2 and cm.campaign_id = $3
-     limit 1`,
-    [job.campaignMessageId, job.tenantId, job.campaignId]
-  );
+  const targetRes = job.messageId
+    ? await db.queryForTenant<SendTarget>(
+        job.tenantId,
+        `select null::uuid as campaign_message_id,
+                m.id as message_id,
+                m.contact_id,
+                m.idempotency_key,
+                c.phone_e164,
+                c.wa_id,
+                t.name as template_name,
+                t.language_code,
+                tn.plan_code
+         from messages m
+         inner join contacts c on c.id = m.contact_id
+         inner join campaigns cp on cp.id = m.campaign_id
+         inner join templates t on t.id = cp.template_id
+         inner join tenants tn on tn.id = m.tenant_id
+         where m.id = $1 and m.tenant_id = $2 and m.campaign_id = $3
+         limit 1`,
+        [job.messageId, job.tenantId, job.campaignId]
+      )
+    : await db.queryForTenant<SendTarget>(
+        job.tenantId,
+        `select cm.id as campaign_message_id,
+                null::uuid as message_id,
+                cm.contact_id,
+                cm.idempotency_key,
+                c.phone_e164,
+                c.wa_id,
+                t.name as template_name,
+                t.language_code,
+                tn.plan_code
+         from campaign_messages cm
+         inner join contacts c on c.id = cm.contact_id
+         inner join campaigns cp on cp.id = cm.campaign_id
+         inner join templates t on t.id = cp.template_id
+         inner join tenants tn on tn.id = cm.tenant_id
+         where cm.id = $1 and cm.tenant_id = $2 and cm.campaign_id = $3
+         limit 1`,
+        [job.campaignMessageId, job.tenantId, job.campaignId]
+      );
 
   const target = targetRes.rows[0];
   if (!target) {
@@ -182,47 +221,67 @@ async function processMessageJob(
   const result = await sendWhatsappTemplateMessage(recipient, target.template_name);
 
   if (!result.ok) {
-    await db.query(
-      `update campaign_messages
-       set status = 'failed_retryable',
-           error_code = $1,
-           attempt_count = attempt_count + 1
-       where id = $2`,
-      [result.errorCode, target.campaign_message_id]
-    );
+    if (LEGACY_FLOW_ENABLED && target.campaign_message_id) {
+      await db.queryForTenant(
+        job.tenantId,
+        `update campaign_messages
+         set status = 'failed_retryable',
+             error_code = $1,
+             attempt_count = attempt_count + 1
+         where id = $2`,
+        [result.errorCode, target.campaign_message_id]
+      );
+    }
 
-    await syncMessageMirror(db, job.tenantId, target.idempotency_key, 'failed_retryable', null, result.errorCode);
-    await appendMessageLogByIdempotency(
-      db,
-      job.tenantId,
-      target.idempotency_key,
-      'send_failed_retryable',
-      'worker',
-      { errorCode: result.errorCode }
-    );
+    if (target.message_id) {
+      await syncMessageMirrorByMessageId(db, job.tenantId, target.message_id, 'failed_retryable', null, result.errorCode);
+      await appendMessageLogByMessageId(db, job.tenantId, target.message_id, 'send_failed_retryable', 'worker', {
+        errorCode: result.errorCode
+      });
+    } else {
+      await syncMessageMirror(db, job.tenantId, target.idempotency_key, 'failed_retryable', null, result.errorCode);
+      await appendMessageLogByIdempotency(
+        db,
+        job.tenantId,
+        target.idempotency_key,
+        'send_failed_retryable',
+        'worker',
+        { errorCode: result.errorCode }
+      );
+    }
 
     throw new Error(result.errorCode);
   }
 
-  await db.query(
-    `update campaign_messages
-     set status = 'accepted_meta',
-         meta_message_id = $1,
-         error_code = null,
-         attempt_count = attempt_count + 1
-    where id = $2`,
-    [result.messageId, target.campaign_message_id]
-  );
+  if (LEGACY_FLOW_ENABLED && target.campaign_message_id) {
+    await db.queryForTenant(
+      job.tenantId,
+      `update campaign_messages
+       set status = 'accepted_meta',
+           meta_message_id = $1,
+           error_code = null,
+           attempt_count = attempt_count + 1
+      where id = $2`,
+      [result.messageId, target.campaign_message_id]
+    );
+  }
 
-  await syncMessageMirror(db, job.tenantId, target.idempotency_key, 'accepted_meta', result.messageId, null);
-  await appendMessageLogByIdempotency(
-    db,
-    job.tenantId,
-    target.idempotency_key,
-    'accepted_meta',
-    'worker',
-    { providerMessageId: result.messageId }
-  );
+  if (target.message_id) {
+    await syncMessageMirrorByMessageId(db, job.tenantId, target.message_id, 'accepted_meta', result.messageId, null);
+    await appendMessageLogByMessageId(db, job.tenantId, target.message_id, 'accepted_meta', 'worker', {
+      providerMessageId: result.messageId
+    });
+  } else {
+    await syncMessageMirror(db, job.tenantId, target.idempotency_key, 'accepted_meta', result.messageId, null);
+    await appendMessageLogByIdempotency(
+      db,
+      job.tenantId,
+      target.idempotency_key,
+      'accepted_meta',
+      'worker',
+      { providerMessageId: result.messageId }
+    );
+  }
 }
 
 async function sendWhatsappTemplateMessage(
@@ -329,7 +388,8 @@ async function syncMessageMirror(
   providerMessageId: string | null,
   errorCode: string | null
 ): Promise<void> {
-  await db.query(
+  await db.queryForTenant(
+    tenantId,
     `update messages
      set status = $1,
          provider_message_id = coalesce($2, provider_message_id),
@@ -341,6 +401,27 @@ async function syncMessageMirror(
   );
 }
 
+async function syncMessageMirrorByMessageId(
+  db: DbClient,
+  tenantId: string,
+  messageId: string,
+  status: string,
+  providerMessageId: string | null,
+  errorCode: string | null
+): Promise<void> {
+  await db.queryForTenant(
+    tenantId,
+    `update messages
+     set status = $1,
+         provider_message_id = coalesce($2, provider_message_id),
+         error_code = $3,
+         updated_at = now()
+     where tenant_id = $4
+       and id = $5`,
+    [status, providerMessageId, errorCode, tenantId, messageId]
+  );
+}
+
 async function syncMessageMirrorByCampaignMessage(
   db: DbClient,
   tenantId: string,
@@ -348,7 +429,8 @@ async function syncMessageMirrorByCampaignMessage(
   status: string,
   errorCode: string | null
 ): Promise<void> {
-  await db.query(
+  await db.queryForTenant(
+    tenantId,
     `update messages m
      set status = $1,
          error_code = $2,
@@ -370,13 +452,30 @@ async function appendMessageLogByIdempotency(
   eventSource: 'worker' | 'meta_webhook' | 'api' | 'system',
   payload: object
 ): Promise<void> {
-  await db.query(
+  await db.queryForTenant(
+    tenantId,
     `insert into message_logs (tenant_id, message_id, event_type, event_source, payload_jsonb)
      select m.tenant_id, m.id, $1, $2, $3::jsonb
      from messages m
      where m.tenant_id = $4
        and m.idempotency_key = $5`,
     [eventType, eventSource, JSON.stringify(payload), tenantId, idempotencyKey]
+  );
+}
+
+async function appendMessageLogByMessageId(
+  db: DbClient,
+  tenantId: string,
+  messageId: string,
+  eventType: string,
+  eventSource: 'worker' | 'meta_webhook' | 'api' | 'system',
+  payload: object
+): Promise<void> {
+  await db.queryForTenant(
+    tenantId,
+    `insert into message_logs (tenant_id, message_id, event_type, event_source, payload_jsonb)
+     values ($1, $2, $3, $4, $5::jsonb)`,
+    [tenantId, messageId, eventType, eventSource, JSON.stringify(payload)]
   );
 }
 
@@ -437,21 +536,35 @@ async function consumeMessageQueue(
 
       if (error instanceof RateLimitError) {
         metrics.incMessageRateLimited();
-        await db.query(
-          `update campaign_messages
-           set status = 'rate_limited'
-           where id = $1`,
-          [payload.campaignMessageId]
-        );
+        if (LEGACY_FLOW_ENABLED && payload.campaignMessageId) {
+          await db.queryForTenant(
+            payload.tenantId,
+            `update campaign_messages
+             set status = 'rate_limited'
+             where id = $1`,
+            [payload.campaignMessageId]
+          );
+        }
 
         await enqueueRetry(channel, MESSAGE_RETRY_QUEUE, payload, currentAttempt, error.retryAfterMs);
-        await syncMessageMirrorByCampaignMessage(
-          db,
-          payload.tenantId,
-          payload.campaignMessageId,
-          'rate_limited',
-          'rate_limited'
-        );
+        if (payload.messageId) {
+          await syncMessageMirrorByMessageId(
+            db,
+            payload.tenantId,
+            payload.messageId,
+            'rate_limited',
+            null,
+            'rate_limited'
+          );
+        } else if (payload.campaignMessageId) {
+          await syncMessageMirrorByCampaignMessage(
+            db,
+            payload.tenantId,
+            payload.campaignMessageId,
+            'rate_limited',
+            'rate_limited'
+          );
+        }
         metrics.incMessageRetried('message');
         channel.ack(msg);
         return;
@@ -462,31 +575,42 @@ async function consumeMessageQueue(
 
       if (nextAttempt <= MAX_ATTEMPTS) {
         await enqueueRetry(channel, MESSAGE_RETRY_QUEUE, payload, nextAttempt);
-        await syncMessageMirrorByCampaignMessage(
-          db,
-          payload.tenantId,
-          payload.campaignMessageId,
-          'failed_retryable',
-          reason
-        );
+        if (payload.messageId) {
+          await syncMessageMirrorByMessageId(db, payload.tenantId, payload.messageId, 'failed_retryable', null, reason);
+        } else if (payload.campaignMessageId) {
+          await syncMessageMirrorByCampaignMessage(
+            db,
+            payload.tenantId,
+            payload.campaignMessageId,
+            'failed_retryable',
+            reason
+          );
+        }
         metrics.incMessageRetried('message');
       } else {
-        await db.query(
-          `update campaign_messages
-           set status = 'failed_permanent',
-               error_code = $1,
-               attempt_count = attempt_count + 1
-           where id = $2`,
-          [reason, payload.campaignMessageId]
-        );
+        if (LEGACY_FLOW_ENABLED && payload.campaignMessageId) {
+          await db.queryForTenant(
+            payload.tenantId,
+            `update campaign_messages
+             set status = 'failed_permanent',
+                 error_code = $1,
+                 attempt_count = attempt_count + 1
+             where id = $2`,
+            [reason, payload.campaignMessageId]
+          );
+        }
 
-        await syncMessageMirrorByCampaignMessage(
-          db,
-          payload.tenantId,
-          payload.campaignMessageId,
-          'failed_permanent',
-          reason
-        );
+        if (payload.messageId) {
+          await syncMessageMirrorByMessageId(db, payload.tenantId, payload.messageId, 'failed_permanent', null, reason);
+        } else if (payload.campaignMessageId) {
+          await syncMessageMirrorByCampaignMessage(
+            db,
+            payload.tenantId,
+            payload.campaignMessageId,
+            'failed_permanent',
+            reason
+          );
+        }
         metrics.incMessageFailedPermanent();
         await enqueueDlq(channel, MESSAGE_DLQ, payload, reason);
       }

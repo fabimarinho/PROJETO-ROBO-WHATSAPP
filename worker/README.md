@@ -1,44 +1,36 @@
-﻿# Projeto Worker
+# Worker (BullMQ) - Fase 3
 
-Worker com pipeline completo:
-- `campaign.launch`: expande campanha para `campaign_messages`
-- `message.send`: envia cada mensagem para WhatsApp Cloud API
-- retry + DLQ para os dois estágios
-- atualização de status em PostgreSQL
-- rate limit distribuído por plano em Redis
-- métricas Prometheus em `/metrics`
+Worker isolado para processamento assíncrono com Redis/BullMQ.
 
 ## Filas
 - `campaign.launch`
-- `campaign.launch.retry` (delay queue com dead-letter para `campaign.launch`)
-- `campaign.launch.dlq`
 - `message.send`
-- `message.send.retry` (delay queue com dead-letter para `message.send`)
-- `message.send.dlq`
+- `message.send.dlq` (dead-letter lógica)
 
-## Variáveis
+## Recursos
+- Retry automático (`attempts` + backoff exponencial).
+- Delay aleatório configurável no produtor.
+- Controle de concorrência por worker.
+- Rate limit por plano (Redis).
+- Integração WhatsApp Cloud API.
+
+## Comandos
+- `npm run start` (worker legado RabbitMQ)
+- `npm run start:bullmq` (worker fase 3)
+- `npm run build`
+- `npm run test`
+- `npm run test:integration`
+
+## Variáveis principais
 - `DATABASE_URL`
-- `RABBITMQ_URL`
-- `REDIS_URL`
-- `RABBITMQ_CAMPAIGN_QUEUE`
-- `RABBITMQ_MESSAGE_QUEUE`
-- `WORKER_MAX_ATTEMPTS`
-- `WORKER_METRICS_PORT`
-- `WORKER_QUEUE_DEPTH_INTERVAL_MS`
+- `REDIS_HOST`
+- `REDIS_PORT`
+- `BULLMQ_CAMPAIGN_QUEUE`
+- `BULLMQ_MESSAGE_QUEUE`
+- `BULLMQ_MAX_ATTEMPTS`
+- `BULLMQ_RETRY_DELAY_MS`
+- `BULLMQ_WORKER_CONCURRENCY`
 - `PLAN_LIMITS_PER_MINUTE`
 - `META_GRAPH_VERSION`
 - `META_PHONE_NUMBER_ID`
 - `META_ACCESS_TOKEN`
-- `ALLOW_MOCK_WHATSAPP_SEND`
-
-Sem credenciais da Meta, o worker só entra em mock quando `ALLOW_MOCK_WHATSAPP_SEND=true` e fora de produção.
-
-## Observabilidade
-- Endpoint Prometheus: `GET /metrics`
-- Métricas principais:
-  - `worker_launch_jobs_processed_total`
-  - `worker_messages_processed_total`
-  - `worker_messages_failed_permanent_total`
-  - `worker_messages_rate_limited_total`
-  - `worker_messages_retried_total{stage=...}`
-  - `worker_queue_depth{queue=...}`

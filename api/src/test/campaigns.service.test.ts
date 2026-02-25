@@ -40,6 +40,14 @@ class FakeDb {
 
     return { rowCount: 0, rows: [] };
   }
+
+  queryForTenant(
+    _tenantId: string,
+    text: string,
+    values: unknown[] = []
+  ): Promise<{ rowCount: number; rows: Array<Record<string, string>> }> {
+    return this.query(text, values);
+  }
 }
 
 class FakePublisher {
