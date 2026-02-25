@@ -10,6 +10,7 @@ import { ContactsController } from './modules/contacts/contacts.controller';
 import { ContactsService } from './modules/contacts/contacts.service';
 import { HealthController } from './modules/health/health.controller';
 import { MessagingController } from './modules/messaging/messaging.controller';
+import { MessageVariationService } from './modules/messaging/message-variation.service';
 import { MessagingService } from './modules/messaging/messaging.service';
 import { WhatsAppCloudClient } from './modules/messaging/whatsapp-cloud.client';
 import { MetricsController } from './modules/metrics/metrics.controller';
@@ -59,6 +60,7 @@ import { RequestLoggingMiddleware } from './shared/observability/request-logging
     ContactsService,
     UsersService,
     MessagingService,
+    MessageVariationService,
     BillingService,
     WhatsAppCloudClient,
     {

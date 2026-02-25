@@ -13,9 +13,11 @@ Worker isolado para processamento assíncrono com Redis/BullMQ.
 - Controle de concorrência por worker.
 - Rate limit por plano (Redis).
 - Integração WhatsApp Cloud API.
+- Humanização automática de mensagens (variações + delay por campanha).
 
 ## Comandos
-- `npm run start` (worker legado RabbitMQ)
+- `npm run start` (entrypoint por `QUEUE_ENGINE`)
+- `npm run start:rabbitmq` (worker legado RabbitMQ)
 - `npm run start:bullmq` (worker fase 3)
 - `npm run build`
 - `npm run test`
@@ -23,6 +25,7 @@ Worker isolado para processamento assíncrono com Redis/BullMQ.
 
 ## Variáveis principais
 - `DATABASE_URL`
+- `QUEUE_ENGINE` (`bullmq` ou `rabbitmq`)
 - `REDIS_HOST`
 - `REDIS_PORT`
 - `BULLMQ_CAMPAIGN_QUEUE`

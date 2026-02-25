@@ -1,11 +1,11 @@
-﻿import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
+import { AuthUser } from '../../shared/auth/auth.types';
+import { CurrentUser } from '../../shared/decorators/current-user.decorator';
+import { Roles } from '../../shared/decorators/roles.decorator';
+import { TenantAccessGuard } from '../../shared/guards/tenant-access.guard';
+import { TenantsService } from '../tenants/tenants.service';
 import { Campaign, CampaignLog, CampaignMetrics } from './campaign.model';
 import { CampaignsService } from './campaigns.service';
-import { TenantsService } from '../tenants/tenants.service';
-import { TenantAccessGuard } from '../../shared/guards/tenant-access.guard';
-import { Roles } from '../../shared/decorators/roles.decorator';
-import { CurrentUser } from '../../shared/decorators/current-user.decorator';
-import { AuthUser } from '../../shared/auth/auth.types';
 
 @UseGuards(TenantAccessGuard)
 @Controller('tenants/:tenantId/campaigns')
@@ -57,5 +57,52 @@ export class CampaignsController {
   ): Promise<CampaignLog[]> {
     await this.tenantsService.getOrThrow(tenantId);
     return this.campaignsService.getLogs(tenantId, campaignId);
+  }
+
+  @Roles('owner', 'admin', 'operator')
+  @Post(':campaignId/humanization-config')
+  async configureHumanization(
+    @Param('tenantId') tenantId: string,
+    @Param('campaignId') campaignId: string,
+    @Body()
+    body: {
+      name?: string;
+      enabled: boolean;
+      rotationStrategy: 'round_robin' | 'random';
+      baseTemplateText: string;
+      phraseBank: { openers?: string[]; bodies?: string[]; closings?: string[] };
+      syntacticVariationLevel: number;
+      minDelayMs: number;
+      maxDelayMs: number;
+    }
+  ): Promise<{ configured: true }> {
+    await this.tenantsService.getOrThrow(tenantId);
+    await this.campaignsService.configureHumanization(tenantId, campaignId, body);
+    return { configured: true };
+  }
+
+  @Get(':campaignId/humanization-config')
+  async getHumanizationConfig(
+    @Param('tenantId') tenantId: string,
+    @Param('campaignId') campaignId: string
+  ): Promise<unknown> {
+    await this.tenantsService.getOrThrow(tenantId);
+    return this.campaignsService.getHumanizationConfig(tenantId, campaignId);
+  }
+
+  @Get(':campaignId/humanization-preview')
+  async previewHumanization(
+    @Param('tenantId') tenantId: string,
+    @Param('campaignId') campaignId: string,
+    @Query('contactId') contactId: string,
+    @Query('count') count?: string
+  ): Promise<Array<{ text: string; hash: string; delayMs: number }>> {
+    await this.tenantsService.getOrThrow(tenantId);
+    return this.campaignsService.previewHumanization(
+      tenantId,
+      campaignId,
+      contactId,
+      count ? Number(count) : 5
+    );
   }
 }

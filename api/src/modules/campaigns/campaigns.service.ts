@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { PostgresService } from '../../shared/database/postgres.service';
 import { QueueService } from '../queue/queue.service';
 import { Campaign, CampaignLog, CampaignMetrics } from './campaign.model';
+import { MessageVariationService } from '../messaging/message-variation.service';
 
 type DbCampaign = {
   id: string;
@@ -31,7 +32,8 @@ type DbCampaignLog = {
 export class CampaignsService {
   constructor(
     private readonly db: PostgresService,
-    private readonly queue: QueueService
+    private readonly queue: QueueService,
+    private readonly messageVariation: MessageVariationService
   ) {}
 
   async create(input: {
@@ -213,6 +215,42 @@ export class CampaignsService {
       eventAt: row.event_at,
       payload: row.payload_jsonb
     }));
+  }
+
+  async configureHumanization(
+    tenantId: string,
+    campaignId: string,
+    input: {
+      name?: string;
+      enabled: boolean;
+      rotationStrategy: 'round_robin' | 'random';
+      baseTemplateText: string;
+      phraseBank: { openers?: string[]; bodies?: string[]; closings?: string[] };
+      syntacticVariationLevel: number;
+      minDelayMs: number;
+      maxDelayMs: number;
+    }
+  ): Promise<void> {
+    await this.getOrThrow(tenantId, campaignId);
+    await this.messageVariation.configureCampaign(tenantId, {
+      campaignId,
+      ...input
+    });
+  }
+
+  async getHumanizationConfig(tenantId: string, campaignId: string): Promise<unknown> {
+    await this.getOrThrow(tenantId, campaignId);
+    return this.messageVariation.getCampaignConfiguration(tenantId, campaignId);
+  }
+
+  async previewHumanization(
+    tenantId: string,
+    campaignId: string,
+    contactId: string,
+    count = 5
+  ): Promise<Array<{ text: string; hash: string; delayMs: number }>> {
+    await this.getOrThrow(tenantId, campaignId);
+    return this.messageVariation.previewCampaignVariants(tenantId, campaignId, contactId, count);
   }
 
   private async getOrThrow(tenantId: string, campaignId: string): Promise<Campaign> {

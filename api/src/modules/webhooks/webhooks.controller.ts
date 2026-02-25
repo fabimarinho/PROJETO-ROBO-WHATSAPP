@@ -12,6 +12,7 @@
   UnauthorizedException
 } from '@nestjs/common';
 import { Public } from '../../shared/decorators/public.decorator';
+import { RawResponse } from '../../shared/decorators/raw-response.decorator';
 import { WebhooksService } from './webhooks.service';
 
 @Controller('webhooks/meta/whatsapp/:tenantId')
@@ -19,6 +20,7 @@ export class WebhooksController {
   constructor(private readonly webhooksService: WebhooksService) {}
 
   @Public()
+  @RawResponse()
   @Get()
   verify(
     @Query('hub.mode') mode: string,

@@ -50,16 +50,34 @@ class FakeDb {
   }
 }
 
-class FakePublisher {
-  async publish(): Promise<void> {
+class FakeQueue {
+  async enqueueCampaignLaunch(): Promise<void> {
     return;
+  }
+}
+
+class FakeVariationService {
+  async configureCampaign(): Promise<void> {
+    return;
+  }
+
+  async getCampaignConfiguration(): Promise<null> {
+    return null;
+  }
+
+  async previewCampaignVariants(): Promise<Array<{ text: string; hash: string; delayMs: number }>> {
+    return [];
   }
 }
 
 describe('CampaignsService', () => {
   it('prefers metrics from messages table before legacy campaign_messages', async () => {
     const db = new FakeDb();
-    const service = new CampaignsService(db as never, new FakePublisher() as never);
+    const service = new CampaignsService(
+      db as never,
+      new FakeQueue() as never,
+      new FakeVariationService() as never
+    );
 
     const metrics = await service.getMetrics('tenant-1', 'campaign-1');
 

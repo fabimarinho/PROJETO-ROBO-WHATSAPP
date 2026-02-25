@@ -23,6 +23,8 @@ Backend SaaS multi-tenant com NestJS + Node.js, seguindo Clean Architecture/DDD 
 - Integração WhatsApp Business Cloud API.
 - Webhook da Meta com validação de assinatura.
 - BullMQ com worker isolado, retry/backoff, delay aleatório, concorrência e DLQ.
+- Seleção de engine de fila no worker via `QUEUE_ENGINE` (`bullmq`/`rabbitmq`).
+- Engine interna de humanização de mensagens por campanha.
 
 ## Estrutura
 - `api/src/modules/*`: módulos de domínio.
@@ -52,6 +54,10 @@ Backend SaaS multi-tenant com NestJS + Node.js, seguindo Clean Architecture/DDD 
 
 ## Migrações da fase 3
 - `0007_auth_refresh_tokens.sql`: persistência de refresh tokens.
+- `0008_message_humanization_engine.sql`: banco e estado de humanização.
+
+## Documentação técnica fase 4
+- `docs/message-humanization-engine.md`
 
 ## Observações arquiteturais
 - Isolamento multi-tenant por `tenant_id` + RLS.

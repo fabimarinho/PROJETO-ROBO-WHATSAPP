@@ -1,5 +1,6 @@
 import { Job, Queue, Worker } from 'bullmq';
 import { randomUUID } from 'node:crypto';
+import { MessageVariationEngine } from './core/message-variation-engine';
 import { DbClient } from './infra/db-client';
 import { PlanRateLimiter } from './infra/plan-rate-limiter';
 
@@ -16,6 +17,27 @@ type MessageSendJob = {
   messageId: string;
 };
 
+type HumanizationConfigRow = {
+  profile_id: string;
+  rotation_strategy: 'round_robin' | 'random';
+  base_template_text: string;
+  phrase_bank_jsonb: {
+    openers?: string[];
+    bodies?: string[];
+    closings?: string[];
+  } | null;
+  syntactic_variation_level: number;
+  min_delay_ms: number;
+  max_delay_ms: number;
+  last_variant_index: number;
+  last_variant_hash: string | null;
+};
+
+type ContactRow = {
+  id: string;
+  attributes_jsonb: Record<string, unknown> | null;
+};
+
 type MessageTarget = {
   id: string;
   contact_id: string;
@@ -25,6 +47,7 @@ type MessageTarget = {
   template_name: string;
   template_language_code: string;
   plan_code: string;
+  payload_jsonb: Record<string, unknown> | null;
 };
 
 const campaignQueueName = process.env.BULLMQ_CAMPAIGN_QUEUE ?? 'campaign.launch';
@@ -52,9 +75,9 @@ async function processCampaignLaunch(db: DbClient, messageQueue: Queue<MessageSe
     throw new Error('campaign_not_found');
   }
 
-  const contactsRes = await db.queryForTenant<{ id: string }>(
+  const contactsRes = await db.queryForTenant<ContactRow>(
     payload.tenantId,
-    `select id
+    `select id, attributes_jsonb
      from contacts
      where tenant_id = $1
        and consent_status in ('opted_in', 'unknown')
@@ -62,8 +85,14 @@ async function processCampaignLaunch(db: DbClient, messageQueue: Queue<MessageSe
     [payload.tenantId]
   );
 
+  const engine = new MessageVariationEngine();
+  const humanization = await getHumanizationConfig(db, payload.tenantId, payload.campaignId);
+  let mutableIndex = humanization?.last_variant_index ?? 0;
+  let mutableHash = humanization?.last_variant_hash ?? null;
+
   for (const contact of contactsRes.rows) {
     const idempotencyKey = `${payload.campaignId}:${contact.id}`;
+
     await db.queryForTenant(
       payload.tenantId,
       `insert into campaign_contacts (tenant_id, campaign_id, contact_id, status)
@@ -73,17 +102,82 @@ async function processCampaignLaunch(db: DbClient, messageQueue: Queue<MessageSe
       [payload.tenantId, payload.campaignId, contact.id]
     );
 
+    let variationPayload: Record<string, unknown> = {};
+    let perMessageDelayMs = 0;
+
+    if (humanization) {
+      const vars = {
+        nome: extractString(contact.attributes_jsonb, ['nome', 'name']) ?? 'cliente',
+        cidade: extractString(contact.attributes_jsonb, ['cidade', 'city']) ?? 'sua cidade'
+      };
+
+      const variant = engine.generate(
+        {
+          profileId: humanization.profile_id,
+          rotationStrategy: humanization.rotation_strategy,
+          baseTemplateText: humanization.base_template_text,
+          phraseBank: humanization.phrase_bank_jsonb ?? {},
+          syntacticVariationLevel: humanization.syntactic_variation_level,
+          minDelayMs: humanization.min_delay_ms,
+          maxDelayMs: humanization.max_delay_ms,
+          lastVariantIndex: mutableIndex,
+          lastVariantHash: mutableHash
+        },
+        vars
+      );
+
+      mutableIndex = variant.nextIndex;
+      mutableHash = variant.hash;
+      perMessageDelayMs = variant.delayMs;
+      variationPayload = {
+        humanization: {
+          profileId: humanization.profile_id,
+          text: variant.text,
+          hash: variant.hash,
+          vars,
+          delayMs: variant.delayMs
+        }
+      };
+    }
+
     const messageRes = await db.queryForTenant<{ id: string }>(
       payload.tenantId,
       `insert into messages (
          tenant_id, campaign_id, contact_id, direction, provider, idempotency_key,
          status, template_name, template_language_code, payload_jsonb
-       ) values ($1, $2, $3, 'outbound', 'meta', $4, 'queued', $5, $6, '{}'::jsonb)
+       ) values ($1, $2, $3, 'outbound', 'meta', $4, 'queued', $5, $6, $7::jsonb)
        on conflict (tenant_id, idempotency_key)
-       do update set status = 'queued', updated_at = now()
+       do update set status = 'queued', payload_jsonb = excluded.payload_jsonb, updated_at = now()
        returning id`,
-      [payload.tenantId, payload.campaignId, contact.id, idempotencyKey, campaignRes.rows[0].template_name, campaignRes.rows[0].language_code]
+      [
+        payload.tenantId,
+        payload.campaignId,
+        contact.id,
+        idempotencyKey,
+        campaignRes.rows[0].template_name,
+        campaignRes.rows[0].language_code,
+        JSON.stringify(variationPayload)
+      ]
     );
+
+    if (humanization) {
+      await db.queryForTenant(
+        payload.tenantId,
+        `insert into message_variation_events (
+           tenant_id, campaign_id, contact_id, message_id, variant_text, variant_hash, delay_ms
+         )
+         values ($1, $2, $3, $4, $5, $6, $7)`,
+        [
+          payload.tenantId,
+          payload.campaignId,
+          contact.id,
+          messageRes.rows[0].id,
+          String((variationPayload.humanization as Record<string, unknown>).text),
+          String((variationPayload.humanization as Record<string, unknown>).hash),
+          perMessageDelayMs
+        ]
+      );
+    }
 
     await messageQueue.add(
       `send:${payload.tenantId}:${messageRes.rows[0].id}`,
@@ -96,8 +190,21 @@ async function processCampaignLaunch(db: DbClient, messageQueue: Queue<MessageSe
         attempts: Number(process.env.BULLMQ_MAX_ATTEMPTS ?? 5),
         backoff: { type: 'exponential', delay: Number(process.env.BULLMQ_RETRY_DELAY_MS ?? 3000) },
         removeOnComplete: 1000,
-        removeOnFail: false
+        removeOnFail: false,
+        delay: perMessageDelayMs
       }
+    );
+  }
+
+  if (humanization) {
+    await db.queryForTenant(
+      payload.tenantId,
+      `update campaign_message_humanization_settings
+       set last_variant_index = $1,
+           last_variant_hash = $2,
+           updated_at = now()
+       where tenant_id = $3 and campaign_id = $4`,
+      [mutableIndex, mutableHash, payload.tenantId, payload.campaignId]
     );
   }
 }
@@ -106,7 +213,7 @@ async function processMessageSend(db: DbClient, limiter: PlanRateLimiter, payloa
   const targetRes = await db.queryForTenant<MessageTarget>(
     payload.tenantId,
     `select m.id, m.contact_id, m.idempotency_key, c.phone_e164, c.wa_id,
-            m.template_name, m.template_language_code, t.plan_code
+            m.template_name, m.template_language_code, t.plan_code, m.payload_jsonb
      from messages m
      inner join contacts c on c.id = m.contact_id and c.tenant_id = m.tenant_id
      inner join tenants t on t.id = m.tenant_id
@@ -123,11 +230,13 @@ async function processMessageSend(db: DbClient, limiter: PlanRateLimiter, payloa
   await limiter.assertAllowed(payload.tenantId, target.plan_code);
 
   const recipient = target.wa_id ?? target.phone_e164;
-  const sendResult = await sendWhatsappTemplateMessage(
-    recipient,
-    target.template_name,
-    target.template_language_code ?? 'pt_BR'
-  );
+  const humanizedText = readHumanizedText(target.payload_jsonb);
+  const sendResult = await sendWhatsappMessage({
+    to: recipient,
+    text: humanizedText,
+    templateName: target.template_name,
+    languageCode: target.template_language_code ?? 'pt_BR'
+  });
 
   if (!sendResult.ok) {
     await db.queryForTenant(
@@ -161,11 +270,56 @@ async function processMessageSend(db: DbClient, limiter: PlanRateLimiter, payloa
   );
 }
 
-async function sendWhatsappTemplateMessage(
-  to: string,
-  templateName: string,
-  languageCode: string
-): Promise<{ ok: true; providerMessageId: string } | { ok: false; errorCode: string }> {
+async function getHumanizationConfig(
+  db: DbClient,
+  tenantId: string,
+  campaignId: string
+): Promise<HumanizationConfigRow | null> {
+  const res = await db.queryForTenant<HumanizationConfigRow>(
+    tenantId,
+    `select s.profile_id, s.rotation_strategy, s.last_variant_index, s.last_variant_hash,
+            p.base_template_text, p.phrase_bank_jsonb, p.syntactic_variation_level,
+            p.min_delay_ms, p.max_delay_ms
+     from campaign_message_humanization_settings s
+     inner join message_variation_profiles p on p.id = s.profile_id and p.tenant_id = s.tenant_id
+     where s.tenant_id = $1 and s.campaign_id = $2 and s.is_active = true
+     limit 1`,
+    [tenantId, campaignId]
+  );
+  return res.rows[0] ?? null;
+}
+
+function extractString(obj: Record<string, unknown> | null, keys: string[]): string | null {
+  if (!obj) {
+    return null;
+  }
+  for (const key of keys) {
+    const value = obj[key];
+    if (typeof value === 'string' && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return null;
+}
+
+function readHumanizedText(payload: Record<string, unknown> | null): string | null {
+  if (!payload || typeof payload !== 'object') {
+    return null;
+  }
+  const humanization = payload.humanization as Record<string, unknown> | undefined;
+  if (!humanization) {
+    return null;
+  }
+  const text = humanization.text;
+  return typeof text === 'string' && text.trim().length > 0 ? text : null;
+}
+
+async function sendWhatsappMessage(input: {
+  to: string;
+  text: string | null;
+  templateName: string;
+  languageCode: string;
+}): Promise<{ ok: true; providerMessageId: string } | { ok: false; errorCode: string }> {
   const token = process.env.META_ACCESS_TOKEN;
   const phoneNumberId = process.env.META_PHONE_NUMBER_ID;
   const graphVersion = process.env.META_GRAPH_VERSION ?? 'v20.0';
@@ -174,21 +328,31 @@ async function sendWhatsappTemplateMessage(
     return { ok: true, providerMessageId: `mock-${randomUUID()}` };
   }
 
+  const body =
+    input.text && input.text.length > 0
+      ? {
+          messaging_product: 'whatsapp',
+          to: input.to,
+          type: 'text',
+          text: { body: input.text }
+        }
+      : {
+          messaging_product: 'whatsapp',
+          to: input.to,
+          type: 'template',
+          template: {
+            name: input.templateName,
+            language: { code: input.languageCode }
+          }
+        };
+
   const response = await fetch(`https://graph.facebook.com/${graphVersion}/${phoneNumberId}/messages`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json'
     },
-    body: JSON.stringify({
-      messaging_product: 'whatsapp',
-      to,
-      type: 'template',
-      template: {
-        name: templateName,
-        language: { code: languageCode }
-      }
-    })
+    body: JSON.stringify(body)
   });
 
   const payload = (await response.json()) as {
@@ -214,6 +378,7 @@ async function sendWhatsappTemplateMessage(
 async function start(): Promise<void> {
   const db = new DbClient();
   const limiter = new PlanRateLimiter();
+  const campaignDlq = new Queue('campaign.launch.dlq', { connection: redisConnection });
   const dlq = new Queue('message.send.dlq', { connection: redisConnection });
   const messageQueue = new Queue<MessageSendJob>(messageQueueName, { connection: redisConnection });
 
@@ -229,6 +394,19 @@ async function start(): Promise<void> {
     { connection: redisConnection, concurrency }
   );
 
+  campaignWorker.on('failed', async (job, err) => {
+    if (!job) {
+      return;
+    }
+    if ((job.attemptsMade ?? 0) >= (job.opts.attempts ?? 1)) {
+      await campaignDlq.add(`dlq:${job.id}`, {
+        ...job.data,
+        reason: err.message,
+        failedAt: new Date().toISOString()
+      });
+    }
+  });
+
   messageWorker.on('failed', async (job, err) => {
     if (!job) {
       return;
@@ -243,7 +421,14 @@ async function start(): Promise<void> {
   });
 
   const shutdown = async (): Promise<void> => {
-    await Promise.all([campaignWorker.close(), messageWorker.close(), messageQueue.close(), dlq.close(), db.close()]);
+    await Promise.all([
+      campaignWorker.close(),
+      messageWorker.close(),
+      messageQueue.close(),
+      campaignDlq.close(),
+      dlq.close(),
+      db.close()
+    ]);
     process.exit(0);
   };
 
