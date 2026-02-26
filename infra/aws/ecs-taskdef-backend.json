@@ -1,0 +1,43 @@
+{
+  "family": "robo-whatsapp-backend",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::<account-id>:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::<account-id>:role/roboWhatsappTaskRole",
+  "containerDefinitions": [
+    {
+      "name": "backend",
+      "image": "ghcr.io/org/robo-whatsapp-backend:latest",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 3000,
+          "hostPort": 3000,
+          "protocol": "tcp"
+        }
+      ],
+      "secrets": [
+        { "name": "DATABASE_URL", "valueFrom": "arn:aws:ssm:region:account:parameter/robo-whatsapp/DATABASE_URL" },
+        { "name": "JWT_SECRET", "valueFrom": "arn:aws:ssm:region:account:parameter/robo-whatsapp/JWT_SECRET" },
+        { "name": "JWT_REFRESH_SECRET", "valueFrom": "arn:aws:ssm:region:account:parameter/robo-whatsapp/JWT_REFRESH_SECRET" },
+        { "name": "META_ACCESS_TOKEN", "valueFrom": "arn:aws:ssm:region:account:parameter/robo-whatsapp/META_ACCESS_TOKEN" },
+        { "name": "STRIPE_SECRET_KEY", "valueFrom": "arn:aws:ssm:region:account:parameter/robo-whatsapp/STRIPE_SECRET_KEY" },
+        { "name": "STRIPE_WEBHOOK_SECRET", "valueFrom": "arn:aws:ssm:region:account:parameter/robo-whatsapp/STRIPE_WEBHOOK_SECRET" }
+      ],
+      "environment": [
+        { "name": "NODE_ENV", "value": "production" },
+        { "name": "PORT", "value": "3000" }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/robo-whatsapp-backend",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ]
+}

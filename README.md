@@ -25,11 +25,15 @@ Backend SaaS multi-tenant com NestJS + Node.js, seguindo Clean Architecture/DDD 
 - BullMQ com worker isolado, retry/backoff, delay aleatório, concorrência e DLQ.
 - Seleção de engine de fila no worker via `QUEUE_ENGINE` (`bullmq`/`rabbitmq`).
 - Engine interna de humanização de mensagens por campanha.
+- Billing recorrente com Stripe (plan sync, assinatura mensal, upgrade/downgrade, cancelamento).
+- Webhook Stripe com assinatura HMAC, idempotência e trilha auditável.
+- Bloqueio de disparo por inadimplência e por limite mensal de mensagens do plano.
 
 ## Estrutura
 - `api/src/modules/*`: módulos de domínio.
 - `api/src/shared/*`: cross-cutting concerns.
 - `worker/src/bullmq-worker.ts`: worker BullMQ isolado.
+- `web/src/*`: painel administrativo React (fase frontend).
 - `sql/migrations/*`: migrações versionadas.
 - `docker-compose.yml`: stack local completa.
 
@@ -38,9 +42,10 @@ Backend SaaS multi-tenant com NestJS + Node.js, seguindo Clean Architecture/DDD 
    - `.env.example` -> `.env` (raiz)
    - `api/.env.example` -> `api/.env`
    - `worker/.env.example` -> `worker/.env`
-2. Suba infra/app:
+2. O default do projeto para Postgres host-side e `5433` para evitar conflito com instalacao local em `5432`.
+3. Suba infra/app:
    - `docker compose up -d`
-3. Rodar manualmente sem docker (opcional):
+4. Rodar manualmente sem docker (opcional):
    - API: `npm run migrate --prefix api` e `npm run start --prefix api`
    - Worker: `npm run start:bullmq --prefix worker`
 
@@ -55,9 +60,11 @@ Backend SaaS multi-tenant com NestJS + Node.js, seguindo Clean Architecture/DDD 
 ## Migrações da fase 3
 - `0007_auth_refresh_tokens.sql`: persistência de refresh tokens.
 - `0008_message_humanization_engine.sql`: banco e estado de humanização.
+- `0010_billing_stripe_recurring.sql`: recorrencia Stripe, historico financeiro e auditoria.
 
 ## Documentação técnica fase 4
 - `docs/message-humanization-engine.md`
+- `docs/devops-phase7.md`
 
 ## Observações arquiteturais
 - Isolamento multi-tenant por `tenant_id` + RLS.

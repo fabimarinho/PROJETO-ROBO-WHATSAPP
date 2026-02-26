@@ -1,0 +1,42 @@
+{
+  "family": "robo-whatsapp-worker",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::<account-id>:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::<account-id>:role/roboWhatsappTaskRole",
+  "containerDefinitions": [
+    {
+      "name": "worker",
+      "image": "ghcr.io/org/robo-whatsapp-worker:latest",
+      "essential": true,
+      "secrets": [
+        { "name": "DATABASE_URL", "valueFrom": "arn:aws:ssm:region:account:parameter/robo-whatsapp/DATABASE_URL" },
+        { "name": "REDIS_URL", "valueFrom": "arn:aws:ssm:region:account:parameter/robo-whatsapp/REDIS_URL" },
+        { "name": "RABBITMQ_URL", "valueFrom": "arn:aws:ssm:region:account:parameter/robo-whatsapp/RABBITMQ_URL" },
+        { "name": "META_ACCESS_TOKEN", "valueFrom": "arn:aws:ssm:region:account:parameter/robo-whatsapp/META_ACCESS_TOKEN" }
+      ],
+      "environment": [
+        { "name": "NODE_ENV", "value": "production" },
+        { "name": "QUEUE_ENGINE", "value": "bullmq" },
+        { "name": "WORKER_METRICS_PORT", "value": "9464" }
+      ],
+      "portMappings": [
+        {
+          "containerPort": 9464,
+          "hostPort": 9464,
+          "protocol": "tcp"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/robo-whatsapp-worker",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ]
+}
