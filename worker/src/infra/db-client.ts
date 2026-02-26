@@ -11,7 +11,7 @@ export class DbClient {
         ? { connectionString }
         : {
             host: process.env.DB_HOST ?? 'localhost',
-            port: Number(process.env.DB_PORT ?? 5432),
+            port: Number(process.env.DB_PORT ?? 5433),
             database: process.env.DB_NAME ?? 'robo_whatsapp',
             user: process.env.DB_USER ?? 'app',
             password: process.env.DB_PASSWORD ?? 'app123'

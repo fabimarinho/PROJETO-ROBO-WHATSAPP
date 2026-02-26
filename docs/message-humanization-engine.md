@@ -11,7 +11,9 @@ Gerar mensagens levemente diferentes por contato/campanha para reduzir padrão r
 - Delay aleatório por mensagem (`min_delay_ms..max_delay_ms`).
 
 ## Modelo de dados
-Migration: `sql/migrations/0008_message_humanization_engine.sql`
+Migrations:
+- `sql/migrations/0008_message_humanization_engine.sql`
+- `sql/migrations/0009_phase4_rls_hardening.sql` (RLS estrito multi-tenant)
 
 Tabelas:
 - `message_variation_profiles`

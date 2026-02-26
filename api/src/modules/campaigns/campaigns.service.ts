@@ -3,6 +3,7 @@ import { PostgresService } from '../../shared/database/postgres.service';
 import { QueueService } from '../queue/queue.service';
 import { Campaign, CampaignLog, CampaignMetrics } from './campaign.model';
 import { MessageVariationService } from '../messaging/message-variation.service';
+import { BillingService } from '../billing/billing.service';
 
 type DbCampaign = {
   id: string;
@@ -33,7 +34,8 @@ export class CampaignsService {
   constructor(
     private readonly db: PostgresService,
     private readonly queue: QueueService,
-    private readonly messageVariation: MessageVariationService
+    private readonly messageVariation: MessageVariationService,
+    private readonly billingService: BillingService
   ) {}
 
   async create(input: {
@@ -68,6 +70,17 @@ export class CampaignsService {
 
   async launch(tenantId: string, campaignId: string): Promise<Campaign> {
     const exists = await this.getOrThrow(tenantId, campaignId);
+    const contactsRes = await this.db.queryForTenant<{ total: string }>(
+      tenantId,
+      `select count(*)::text as total
+       from contacts
+       where tenant_id = $1
+         and consent_status in ('opted_in', 'unknown')
+         and deleted_at is null`,
+      [tenantId]
+    );
+    const projectedMessages = Number(contactsRes.rows[0]?.total ?? '0');
+    await this.billingService.assertTenantCanDispatch(tenantId, Math.max(projectedMessages, 1));
 
     await this.db.queryForTenant(
       tenantId,

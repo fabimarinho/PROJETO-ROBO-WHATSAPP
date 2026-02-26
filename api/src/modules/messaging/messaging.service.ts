@@ -2,12 +2,14 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { PostgresService } from '../../shared/database/postgres.service';
 import { QueueService } from '../queue/queue.service';
+import { BillingService } from '../billing/billing.service';
 
 @Injectable()
 export class MessagingService {
   constructor(
     private readonly db: PostgresService,
-    private readonly queue: QueueService
+    private readonly queue: QueueService,
+    private readonly billingService: BillingService
   ) {}
 
   async enqueueTemplateMessage(input: {
@@ -17,6 +19,8 @@ export class MessagingService {
     templateName: string;
     languageCode?: string;
   }): Promise<{ messageId: string; queued: true }> {
+    await this.billingService.assertTenantCanDispatch(input.tenantId, 1);
+
     const campaignExists = await this.db.queryForTenant<{ id: string }>(
       input.tenantId,
       'select id from campaigns where id = $1 and tenant_id = $2 and deleted_at is null limit 1',

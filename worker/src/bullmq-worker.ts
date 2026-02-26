@@ -50,6 +50,13 @@ type MessageTarget = {
   payload_jsonb: Record<string, unknown> | null;
 };
 
+type BillingDispatchRow = {
+  tenant_status: string;
+  subscription_status: string | null;
+  message_limit_monthly: number | null;
+  used_this_month: string;
+};
+
 const campaignQueueName = process.env.BULLMQ_CAMPAIGN_QUEUE ?? 'campaign.launch';
 const messageQueueName = process.env.BULLMQ_MESSAGE_QUEUE ?? 'message.send';
 
@@ -227,6 +234,7 @@ async function processMessageSend(db: DbClient, limiter: PlanRateLimiter, payloa
     throw new Error('message_target_not_found');
   }
 
+  await assertBillingDispatchAllowed(db, payload.tenantId, 1);
   await limiter.assertAllowed(payload.tenantId, target.plan_code);
 
   const recipient = target.wa_id ?? target.phone_e164;
@@ -268,6 +276,48 @@ async function processMessageSend(db: DbClient, limiter: PlanRateLimiter, payloa
      values ($1, $2, 'accepted_meta', 'worker', $3::jsonb)`,
     [payload.tenantId, payload.messageId, JSON.stringify({ providerMessageId: sendResult.providerMessageId })]
   );
+}
+
+async function assertBillingDispatchAllowed(db: DbClient, tenantId: string, requestedMessages: number): Promise<void> {
+  const res = await db.queryForTenant<BillingDispatchRow>(
+    tenantId,
+    `select t.status as tenant_status,
+            s.status as subscription_status,
+            p.message_limit_monthly,
+            coalesce((
+              select sum(uc.billable_count)::text
+              from usage_counters uc
+              where uc.tenant_id = t.id
+                and date_trunc('month', uc.period_day::timestamp) = date_trunc('month', now())
+            ), '0') as used_this_month
+     from tenants t
+     left join subscriptions s
+       on s.tenant_id = t.id
+      and s.status in ('trialing', 'active', 'past_due', 'paused')
+      and s.deleted_at is null
+     left join plans p on p.id = s.plan_id
+     where t.id = $1
+     order by s.created_at desc nulls last
+     limit 1`,
+    [tenantId]
+  );
+
+  const row = res.rows[0];
+  if (!row) {
+    throw new Error('billing_row_not_found');
+  }
+  if (row.tenant_status !== 'active') {
+    throw new Error('billing_tenant_blocked');
+  }
+  if (!(row.subscription_status === 'active' || row.subscription_status === 'trialing')) {
+    throw new Error('billing_subscription_blocked');
+  }
+  if (row.message_limit_monthly !== null) {
+    const used = Number(row.used_this_month);
+    if (used + Math.max(1, requestedMessages) > row.message_limit_monthly) {
+      throw new Error('billing_plan_limit_exceeded');
+    }
+  }
 }
 
 async function getHumanizationConfig(

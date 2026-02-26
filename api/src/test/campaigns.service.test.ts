@@ -70,13 +70,20 @@ class FakeVariationService {
   }
 }
 
+class FakeBillingService {
+  async assertTenantCanDispatch(): Promise<void> {
+    return;
+  }
+}
+
 describe('CampaignsService', () => {
   it('prefers metrics from messages table before legacy campaign_messages', async () => {
     const db = new FakeDb();
     const service = new CampaignsService(
       db as never,
       new FakeQueue() as never,
-      new FakeVariationService() as never
+      new FakeVariationService() as never,
+      new FakeBillingService() as never
     );
 
     const metrics = await service.getMetrics('tenant-1', 'campaign-1');

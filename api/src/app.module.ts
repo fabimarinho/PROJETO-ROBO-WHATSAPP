@@ -3,6 +3,7 @@ import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { AuthController } from './modules/auth/auth.controller';
 import { AuthService } from './modules/auth/auth.service';
 import { BillingController } from './modules/billing/billing.controller';
+import { BillingWebhookController } from './modules/billing/billing-webhook.controller';
 import { BillingService } from './modules/billing/billing.service';
 import { CampaignsController } from './modules/campaigns/campaigns.controller';
 import { CampaignsService } from './modules/campaigns/campaigns.service';
@@ -46,7 +47,8 @@ import { RequestLoggingMiddleware } from './shared/observability/request-logging
     QueueController,
     UsersController,
     MessagingController,
-    BillingController
+    BillingController,
+    BillingWebhookController
   ],
   providers: [
     StructuredLoggerService,
